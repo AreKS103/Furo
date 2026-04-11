@@ -153,7 +153,6 @@ pub fn capture_target() -> Option<CapturedTarget> {
     }
 }
 
-/// Build a single keyboard INPUT struct for SendInput.
 fn make_key_input(vk: VIRTUAL_KEY, flags: u32) -> INPUT {
     INPUT {
         r#type: INPUT_KEYBOARD,

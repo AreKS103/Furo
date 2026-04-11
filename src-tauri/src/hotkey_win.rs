@@ -19,9 +19,7 @@ use super::{
     hotkey_worker, parse_hotkey_combo, HotkeyCallbacks, HotkeyEvent, MouseButton,
 };
 
-// ============================================================================
-// Hook listener
-// ============================================================================
+// ── Hook listener
 
 /// Manages the low-level hook thread and worker thread.
 pub struct HotkeyListener {
@@ -46,7 +44,6 @@ struct SendHook(HHOOK);
 unsafe impl Send for SendHook {}
 unsafe impl Sync for SendHook {}
 
-// Global hook handles for the keyboard and mouse callbacks
 static KB_HOOK: std::sync::Mutex<Option<SendHook>> = std::sync::Mutex::new(None);
 static MOUSE_HOOK: std::sync::Mutex<Option<SendHook>> = std::sync::Mutex::new(None);
 
@@ -156,7 +153,6 @@ unsafe extern "system" fn mouse_hook_proc(
 }
 
 impl HotkeyListener {
-    /// Start the global hotkey listener with the given combo strings and callbacks.
     pub fn start(
         hold_combo_str: &str,
         handsfree_combo_str: &str,
@@ -211,7 +207,6 @@ impl HotkeyListener {
             })
             .expect("Failed to spawn hook thread");
 
-        // Spawn worker thread
         let stop = stop_flag.clone();
         let worker_thread = thread::Builder::new()
             .name("furo-hotkey-worker".into())
@@ -234,7 +229,6 @@ impl HotkeyListener {
         }
     }
 
-    /// Stop the hotkey listener and join threads.
     pub fn stop(&mut self) {
         self.stop_flag.store(true, Ordering::SeqCst);
 
@@ -265,7 +259,6 @@ impl Drop for HotkeyListener {
     }
 }
 
-/// GetCurrentThreadId wrapper.
 #[allow(non_snake_case)]
 fn GetCurrentThreadId_compat() -> u32 {
     unsafe { windows::Win32::System::Threading::GetCurrentThreadId() }

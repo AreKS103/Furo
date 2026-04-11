@@ -1,10 +1,7 @@
 //! Project Furo — Sidecar Process Manager
 //!
 //! Spawns and manages the pre-compiled whisper.cpp HTTP server
-//! as a Tauri sidecar process. Handles:
-//!   - Starting the server with correct CLI args
-//!   - Polling health endpoint until ready
-//!   - Graceful shutdown on app exit
+//! as a Tauri sidecar (start, health poll, graceful shutdown).
 
 use std::path::Path;
 use std::time::{Duration, Instant};

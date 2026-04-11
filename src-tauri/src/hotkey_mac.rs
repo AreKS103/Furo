@@ -280,9 +280,7 @@ struct SendPtr(*mut c_void);
 unsafe impl Send for SendPtr {}
 unsafe impl Sync for SendPtr {}
 
-// ============================================================================
-// Public API — matches HotkeyListener from hotkey_win.rs
-// ============================================================================
+// ── Public API — matches HotkeyListener from hotkey_win.rs
 
 pub struct HotkeyListener {
     stop_flag: Arc<AtomicBool>,

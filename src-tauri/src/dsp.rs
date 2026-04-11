@@ -1,9 +1,6 @@
 //! Project Furo — DSP Conditioning Chain
 //!
-//! Biquad-based audio processing: highpass filter, high-shelf filter, and
-//! compressor. Port of the Python pedalboard pipeline:
-//!   HighpassFilter(300 Hz) → HighShelfFilter(2500 Hz, +5 dB) → Compressor(-20 dB, 3:1)
-//!
+//! Biquad-based processing: highpass → high-shelf → compressor.
 //! All processing operates on f32 samples in [-1.0, 1.0] at 16 kHz.
 
 use crate::config;
@@ -15,7 +12,6 @@ struct BiquadFilter {
     b2: f32,
     a1: f32,
     a2: f32,
-    // State
     x1: f32,
     x2: f32,
     y1: f32,
@@ -79,7 +75,6 @@ impl BiquadFilter {
         }
     }
 
-    /// Process a single sample through the biquad.
     #[inline]
     fn process_sample(&mut self, x: f32) -> f32 {
         let y = self.b0 * x + self.b1 * self.x1 + self.b2 * self.x2
@@ -153,8 +148,7 @@ impl Compressor {
     }
 }
 
-/// Complete DSP processing chain matching the Python pedalboard configuration:
-///   HighpassFilter(300 Hz) → HighShelfFilter(2500 Hz, +5 dB) → Compressor(-20 dB, 3:1)
+/// Complete DSP chain: HighpassFilter(300 Hz) → HighShelfFilter(2500 Hz, +5 dB) → Compressor(-20 dB, 3:1)
 pub struct DspChain {
     highpass: BiquadFilter,
     high_shelf: BiquadFilter,
@@ -162,7 +156,6 @@ pub struct DspChain {
 }
 
 impl DspChain {
-    /// Create a new DSP chain with default configuration constants.
     pub fn new() -> Self {
         let sr = config::AUDIO_RATE as f32;
         Self {

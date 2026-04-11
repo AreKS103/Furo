@@ -50,8 +50,8 @@ extern "C" {
 static OWN_PID: AtomicI32 = AtomicI32::new(0);
 static LAST_EXT_PID: AtomicI32 = AtomicI32::new(0);
 
-/// Spawn a background thread that polls NSWorkspace.frontmostApplication
-/// every 200 ms and remembers the last external (non-Furo) app PID.
+/// Spawn a background thread that polls `NSWorkspace.frontmostApplication`
+/// every 200 ms and tracks the last external (non-Furo) app PID.
 pub fn start_focus_tracker() {
     let own_pid = std::process::id() as i32;
     OWN_PID.store(own_pid, Ordering::Relaxed);

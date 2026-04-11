@@ -1,13 +1,7 @@
 //! Project Furo — Transcription Engine (HTTP → whisper.cpp server)
 //!
-//! Sends audio via HTTP multipart POST to the whisper.cpp sidecar server's
+//! Sends audio via HTTP multipart POST to the whisper.cpp sidecar's
 //! OpenAI-compatible `/v1/audio/transcriptions` endpoint.
-//!
-//! The model is loaded by the sidecar server at startup. This module handles:
-//!   - WAV encoding of raw PCM audio
-//!   - DSP conditioning (optional, pre-send)
-//!   - HTTP multipart upload
-//!   - Filler/stutter regex cleanup
 
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -24,11 +18,8 @@ use crate::dsp::DspChain;
 /// A discovered Whisper GGML model on the local system.
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct FoundModel {
-    /// Absolute path to the .bin file.
     pub path: String,
-    /// Human-readable label (filename + size).
     pub label: String,
-    /// File size in bytes.
     pub size_bytes: u64,
 }
 
@@ -185,7 +176,6 @@ pub struct Transcriber {
 }
 
 impl Transcriber {
-    /// Create a new HTTP transcriber pointing at the whisper.cpp server.
     pub fn new() -> Self {
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(180))
@@ -230,10 +220,8 @@ impl Transcriber {
 
         let t0 = Instant::now();
 
-        // Encode as WAV for the multipart upload
         let wav_data = encode_wav_f32(&audio_f32, config::AUDIO_RATE);
 
-        // Build multipart form
         let file_part = reqwest::blocking::multipart::Part::bytes(wav_data)
             .file_name("audio.wav")
             .mime_str("audio/wav")
@@ -249,7 +237,6 @@ impl Transcriber {
             .text("response_format", "text")
             .text("prompt", config::INITIAL_PROMPT.to_string());
 
-        // POST to whisper server
         let response = match self.client.post(&self.endpoint).multipart(form).send() {
             Ok(r) => r,
             Err(e) => {

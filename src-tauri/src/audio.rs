@@ -1,9 +1,7 @@
 //! Project Furo — Audio Capture (cpal)
 //!
-//! Provides a thread-safe audio recorder that captures microphone input at
-//! 16 kHz mono i16 and streams chunks in real-time to both a volume callback
-//! and a raw-chunk callback for concurrent VAD processing.
-//! Port of Python `audio.py`.
+//! Thread-safe recorder that captures microphone input at 16 kHz mono i16,
+//! streaming chunks to a volume callback and a raw-chunk callback for VAD.
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, Stream, StreamConfig};
@@ -22,13 +20,10 @@ pub struct MicInfo {
     pub index: usize,
 }
 
-/// Audio recorder using cpal. Captures raw PCM i16 audio at 16 kHz mono.
+/// Audio recorder using cpal. Captures raw PCM i16 at 16 kHz mono.
 pub struct AudioRecorder {
-    /// Active cpal stream (None when not recording).
     stream: Option<Stream>,
-    /// Accumulated frames during recording.
     frames: Arc<Mutex<VecDeque<Vec<i16>>>>,
-    /// Whether recording is active.
     recording: Arc<AtomicBool>,
 }
 
@@ -102,11 +97,8 @@ impl AudioRecorder {
                         return;
                     }
 
-                    // Store frames
                     let chunk = data.to_vec();
                     frames.lock().push_back(chunk);
-
-                    // Raw chunk callback for VAD pipeline
                     on_raw_chunk(data);
 
                     // Throttled volume computation
@@ -140,7 +132,7 @@ impl AudioRecorder {
     pub fn stop(&mut self) -> Vec<i16> {
         self.recording.store(false, Ordering::SeqCst);
 
-        // Drop the stream to release the audio device
+        // Drop the stream to release the audio device.
         self.stream = None;
 
         let mut frames = self.frames.lock();
@@ -187,7 +179,6 @@ impl AudioRecorder {
 
             let name_lower = name.to_lowercase();
 
-            // Exclude virtual/loopback/camera devices
             if config::MIC_EXCLUDE_KEYWORDS
                 .iter()
                 .any(|kw| name_lower.contains(kw))
@@ -195,7 +186,6 @@ impl AudioRecorder {
                 continue;
             }
 
-            // Deduplicate by name (same device across host APIs)
             if seen_names.contains(&name) {
                 continue;
             }
@@ -231,7 +221,6 @@ impl AudioRecorder {
 }
 
 /// Compute normalised volume (0.0–1.0) using dBFS with EMA noise floor tracking.
-/// Mirrors the Python `audio.py` volume calculation.
 fn compute_volume(data: &[i16], noise_floor: &Arc<Mutex<f32>>) -> f32 {
     if data.is_empty() {
         return 0.0;

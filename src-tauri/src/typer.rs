@@ -1,9 +1,6 @@
 //! Project Furo â€” Text Injection (cross-platform)
 //!
-//! Platform-specific implementations handle:
-//!   - Focus tracking and target capture
-//!   - Clipboard-based text injection via paste simulation
-//!   - Focus restoration to the target window
+//! Uses clipboard + paste simulation to inject text into the focused window.
 
 #[cfg(target_os = "windows")]
 #[path = "typer_win.rs"]

@@ -8,9 +8,7 @@
 use once_cell::sync::Lazy;
 use regex::Regex;
 
-// ============================================================================
-// Regex Symbol Dictionary
-// ============================================================================
+// ── Regex Symbol Dictionary
 
 struct SymbolRule {
     pattern: Regex,
@@ -74,11 +72,9 @@ static SYMBOL_RULES: Lazy<Vec<SymbolRule>> = Lazy::new(|| {
         .collect()
 });
 
-/// Clean up extra spaces around inserted symbols.
 static SPACE_BEFORE_PUNCT: Lazy<Regex> =
     Lazy::new(|| Regex::new(r" +([.,;:!?\)\]\}])").unwrap());
 
-/// Apply regex symbol dictionary to raw transcription text.
 fn apply_symbol_dict(text: &str) -> String {
     let mut result = text.to_string();
     for rule in SYMBOL_RULES.iter() {
@@ -88,11 +84,8 @@ fn apply_symbol_dict(text: &str) -> String {
     result.trim().to_string()
 }
 
-// ============================================================================
-// Filler & Self-Correction Rules
-// ============================================================================
+// ── Filler & Self-Correction Rules
 
-/// Collapses multiple spaces into one (used after rule application).
 static MULTI_SPACE: Lazy<Regex> = Lazy::new(|| Regex::new(r"  +").unwrap());
 
 static SPEECH_RULES: Lazy<Vec<SymbolRule>> = Lazy::new(|| {
@@ -145,7 +138,6 @@ fn remove_stutters(text: &str) -> String {
     result.join(" ")
 }
 
-/// Apply filler removal and self-correction rules to Whisper output.
 fn apply_speech_rules(text: &str) -> String {
     let mut result = text.to_string();
     for rule in SPEECH_RULES.iter() {
@@ -156,12 +148,8 @@ fn apply_speech_rules(text: &str) -> String {
     result.trim().to_string()
 }
 
-// ============================================================================
-// Public API
-// ============================================================================
-
-/// Process raw Whisper output through all Rust-based text cleaning stages.
-/// No LLM, no HTTP — purely deterministic regex transforms.
+/// Process raw Whisper output through all text cleaning stages.
+/// Purely deterministic regex transforms — no LLM, no HTTP.
 pub fn process(text: &str) -> String {
     // Stage 1: voiced punctuation (regex symbol dictionary)
     let text = apply_symbol_dict(text);

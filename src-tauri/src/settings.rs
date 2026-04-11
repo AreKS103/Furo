@@ -1,8 +1,6 @@
 //! Project Furo — JSON Settings Store
 //!
-//! Thread-safe file-backed settings for the Rust backend.
-//! Stores preferences in `%APPDATA%/Furo/settings.json`.
-//! Port of Python `settings_store.py`.
+//! Thread-safe file-backed settings persisted to `%APPDATA%/Furo/settings.json`.
 
 use parking_lot::Mutex;
 use serde_json::Value;
@@ -11,7 +9,6 @@ use std::fs;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-/// Default settings values. Keys match the Python `DEFAULTS` dict exactly.
 fn defaults() -> HashMap<String, String> {
     let mut m = HashMap::new();
     m.insert("microphone".into(), String::new());
@@ -56,7 +53,7 @@ impl SettingsStore {
 
         let mut data = defaults();
 
-        // Load existing settings from disk
+        // Load saved settings from disk
         if path.exists() {
             match fs::read_to_string(&path) {
                 Ok(contents) => {
@@ -108,7 +105,6 @@ impl SettingsStore {
         store
     }
 
-    /// Get a single setting value.
     pub fn get(&self, key: &str) -> String {
         let inner = self.inner.lock();
         inner
@@ -118,7 +114,6 @@ impl SettingsStore {
             .unwrap_or_else(|| defaults().get(key).cloned().unwrap_or_default())
     }
 
-    /// Set a single setting value and persist immediately.
     pub fn set(&self, key: &str, value: &str) {
         let mut inner = self.inner.lock();
         inner.data.insert(key.into(), value.into());
@@ -135,12 +130,10 @@ impl SettingsStore {
         inner.data.clone()
     }
 
-    /// Return a snapshot of all settings.
     pub fn all(&self) -> HashMap<String, String> {
         self.inner.lock().data.clone()
     }
 
-    /// Persist settings to disk.
     fn save(&self) {
         let inner = self.inner.lock();
         Self::save_inner(&inner);

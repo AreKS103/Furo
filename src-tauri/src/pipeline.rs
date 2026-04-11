@@ -2,9 +2,6 @@
 //!
 //! Central state machine wiring all modules together:
 //!   hotkey → audio → VAD → DSP → Whisper → typer → Tauri events
-//!
-//! Port of `server.py` pipeline logic (recording lifecycle, audio processing,
-//! model loading, event broadcasting).
 
 use parking_lot::Mutex;
 use std::collections::VecDeque;
@@ -23,15 +20,13 @@ use crate::transcriber::Transcriber;
 use crate::typer::{self, CapturedTarget};
 use crate::vad::VoiceActivityDetector;
 
-// ============================================================================
-// Widget activation sound — cpal output (same WASAPI layer as recording)
+// ── Widget activation sound (cpal output)
 //
 // WinMM's PlaySoundA is a legacy WASAPI thunk. On Windows 10/11 it silently
 // returns 0 (failure) when cpal already holds a WASAPI session, because their
 // two sessions compete for the audio engine slot. Using cpal for output too
 // puts both streams through the same WASAPI shared-mode path, which is
 // designed to multiplex many producers without conflict.
-// ============================================================================
 
 static WIDGET_WAV: &[u8] = include_bytes!("../sounds/widget.wav");
 
@@ -179,9 +174,7 @@ fn wav_resample_remix(
     out
 }
 
-// ============================================================================
-// Event payloads
-// ============================================================================
+// ── Event payloads
 
 #[derive(Clone, serde::Serialize)]
 pub struct StatusPayload {
@@ -215,9 +208,7 @@ pub struct SettingsPayload {
     pub data: std::collections::HashMap<String, String>,
 }
 
-// ============================================================================
-// Recording mode
-// ============================================================================
+// ── Recording mode
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RecordingMode {
@@ -226,9 +217,7 @@ pub enum RecordingMode {
     Handsfree,
 }
 
-// ============================================================================
-// Pipeline
-// ============================================================================
+// ── Pipeline
 
 pub struct FuroPipeline {
     pub settings: SettingsStore,
@@ -327,7 +316,6 @@ impl FuroPipeline {
         );
     }
 
-    /// Return the path to the models directory (for external callers like Tauri commands).
     pub fn models_dir(&self) -> std::path::PathBuf {
         self.models_dir.clone()
     }

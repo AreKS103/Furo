@@ -7,7 +7,6 @@
 //!
 //! Uses `ort` (ONNX Runtime) with CPU execution provider — GPU VRAM is
 //! reserved exclusively for Whisper inference.
-//! Port of Python `vad.py`.
 //!
 //! On x86_64 macOS, ONNX Runtime prebuilt binaries are not available
 //! (dropped as of 1.24.1). A passthrough stub is compiled instead —

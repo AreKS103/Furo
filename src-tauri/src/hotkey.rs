@@ -18,9 +18,7 @@ mod platform;
 
 pub use platform::HotkeyListener;
 
-// ============================================================================
-// Rebind mode state — shared between hook proc and worker
-// ============================================================================
+// ── Rebind mode state — shared between hook proc and worker
 
 /// Set to `true` while the UI is in rebind mode.
 /// The hook suppresses Win key OS defaults; the worker captures the next combo.
@@ -30,9 +28,7 @@ pub(crate) static REBIND_MODE_ACTIVE: AtomicBool = AtomicBool::new(false);
 /// Hook suppresses Win→Start-menu / Win+Space→language-switcher during hotkey use.
 pub(crate) static WIN_IS_COMBO_MODIFIER: AtomicBool = AtomicBool::new(false);
 
-// ============================================================================
-// Hotkey event types
-// ============================================================================
+// ── Hotkey event types
 
 #[derive(Debug, Clone)]
 pub enum HotkeyEvent {
@@ -63,9 +59,7 @@ impl MouseButton {
     }
 }
 
-// ============================================================================
-// Parsed hotkey combo
-// ============================================================================
+// ── Parsed hotkey combo
 
 #[derive(Debug, Clone)]
 pub struct HotkeyCombo {
@@ -80,7 +74,6 @@ pub enum HotkeyTrigger {
     Mouse(String),
 }
 
-/// Mouse trigger names that can appear in hotkey combo strings.
 const MOUSE_TRIGGERS: &[&str] = &["mouse1", "mouse2", "mouse3", "mouse4", "mouse5"];
 
 /// Parse a hotkey string like "ctrl+space" or "cmd+f9" into modifiers + trigger.
@@ -100,7 +93,7 @@ pub fn parse_hotkey_combo(hotkey_str: &str) -> HotkeyCombo {
         }
     }
 
-    // Check if the trigger is a mouse button
+    // Check if the trigger is a mouse button.
     if MOUSE_TRIGGERS.contains(&last.as_str()) {
         return HotkeyCombo {
             all_modifier_names: modifiers.clone(),
@@ -210,7 +203,6 @@ fn char_to_vk(ch: char) -> Option<u32> {
     }
 }
 
-/// Modifier VK codes mapped to their canonical names.
 pub(crate) fn vk_to_modifier(vk: u32) -> Option<&'static str> {
     match vk {
         0xA0 | 0xA1 | 0x10 => Some("shift"),
@@ -221,9 +213,7 @@ pub(crate) fn vk_to_modifier(vk: u32) -> Option<&'static str> {
     }
 }
 
-// ============================================================================
-// Callback actions
-// ============================================================================
+// ── Callback actions
 
 pub struct HotkeyCallbacks {
     pub on_hold_press: Box<dyn Fn() + Send>,
@@ -234,9 +224,7 @@ pub struct HotkeyCallbacks {
     pub on_rebind_captured: Option<Box<dyn Fn(String) + Send>>,
 }
 
-// ============================================================================
-// VK code → combo string helper
-// ============================================================================
+// ── VK code → combo string helper
 
 /// Map a Windows VK code back to the canonical combo-part name.
 fn vk_to_combo_part(vk: u32) -> String {
@@ -304,9 +292,7 @@ fn vk_to_combo_part(vk: u32) -> String {
     }
 }
 
-// ============================================================================
-// Worker thread â€” platform-agnostic hotkey matching logic
-// ============================================================================
+// ── Worker thread — platform-agnostic hotkey matching
 
 /// Minimum time (ms) between hold-release and the next hold-press.
 /// Prevents rapid toggle on keyboards that send key-up/key-down pairs

@@ -1,12 +1,5 @@
-﻿//! Project Furo — Tauri v2 Application Core
-//!
-//! Sets up:
-//!   1. System tray with Open / Quit menu
-//!   2. Hidden frameless "widget" window for the floating dictation pill
-#![allow(dead_code)]
-//!   3. Native Rust backend pipeline (audio, VAD, Whisper, hotkeys, typer)
-//!   4. Close-to-tray behaviour for the main window
-//!   5. Persistent store plugin for dictation history
+﻿#![allow(dead_code)]
+//! Tauri application entry point — wires audio, VAD, Whisper, hotkeys, and typer into the Tauri lifecycle.
 
 mod audio;
 mod config;
@@ -36,9 +29,7 @@ use crate::hotkey::REBIND_MODE_ACTIVE;
 
 use tauri_plugin_autostart::MacosLauncher;
 
-// ============================================================================
-// Tauri commands (replace REST API endpoints)
-// ============================================================================
+// ── Tauri commands
 
 #[tauri::command]
 fn get_settings(pipeline: tauri::State<'_, Arc<FuroPipeline>>) -> HashMap<String, String> {
@@ -162,9 +153,7 @@ fn widget_set_expanded(app: tauri::AppHandle, expanded: bool) {
     let _ = win.set_position(LogicalPosition::new(new_x, new_y));
 }
 
-// ============================================================================
-// Tray menu
-// ============================================================================
+// ── Tray menu
 
 fn build_tray_menu(app: &tauri::App) -> Result<tauri::menu::Menu<tauri::Wry>, Box<dyn std::error::Error>> {
     let open_item = MenuItemBuilder::new("Open Furo").id("open").build(app)?;
@@ -172,9 +161,7 @@ fn build_tray_menu(app: &tauri::App) -> Result<tauri::menu::Menu<tauri::Wry>, Bo
     let quit_item = MenuItemBuilder::new("Quit").id("quit").build(app)?;
     Ok(MenuBuilder::new(app).item(&open_item).item(&update_item).separator().item(&quit_item).build()?)
 }
-// ============================================================================
-// Application entry
-// ============================================================================
+// ── Application entry
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -204,12 +191,7 @@ pub fn run() {
             widget_set_expanded,
         ])
         .setup(|app| {
-            // Managed state
-
-            // ── Settings ─────────────────────────────────────────
             let settings = SettingsStore::new(None);
-
-            // ── Pipeline ─────────────────────────────────────────
             let pipeline = FuroPipeline::new(app.handle().clone(), settings);
             app.manage(Arc::clone(&pipeline));
 
@@ -247,7 +229,6 @@ pub fn run() {
 
             let _widget = builder.build()?;
 
-            // ── System tray ─────────────────────────────────────
             let tray_menu = build_tray_menu(app)?;
 
             let mut tray_builder = TrayIconBuilder::with_id("main-tray")
@@ -279,9 +260,6 @@ pub fn run() {
                     }
                 })
                 .build(app)?;
-
-            // ── Listen for tray-update events from the frontend ─
-            // (reserved for future use)
 
             // ── Start backend pipeline ──────────────────────────
             // Begin tracking the last external focused window so `capture_target`
