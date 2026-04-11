@@ -3,13 +3,12 @@ import { useFuro, type ServerState } from "../hooks/useFuro";
 import { useHistory, type DictationEntry, type CumulativeStats } from "../hooks/useHistory";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import { getVersion } from "@tauri-apps/api/app";
 
 interface Mic {
   name: string;
   index: number;
 }
-
-const APP_VERSION = __APP_VERSION__;
 
 interface DashboardProps {
   theme: "dark" | "light";
@@ -753,7 +752,7 @@ function SettingsPage({
               <div className="flex items-center justify-between">
                 <div>
                   <span className="text-sm font-medium text-warm-800 dark:text-zinc-100">Furo</span>
-                  <span className="ml-2 text-xs text-warm-400 dark:text-zinc-500">v{APP_VERSION}</span>
+                  <span className="ml-2 text-xs text-warm-400 dark:text-zinc-500">v{appVersion}</span>
                 </div>
                 <button
                   onClick={onCheckUpdate}
@@ -772,7 +771,7 @@ function SettingsPage({
 
         {/* Version footer */}
         <div className="mt-6 pb-2 text-center">
-          <span className="text-[11px] text-warm-300 dark:text-zinc-600">Furo v{APP_VERSION}</span>
+          <span className="text-[11px] text-warm-300 dark:text-zinc-600">Furo v{appVersion}</span>
         </div>
       </div>
     </div>
@@ -785,6 +784,7 @@ export function Dashboard({ theme, setTheme }: DashboardProps) {
   const { entries, saveEntry, clearAll, cumulativeStats } = useHistory();
   const [activeTab, setActiveTab] = useState<"home" | "settings">("home");
   const lastSavedRef = useRef("");
+  const [appVersion, setAppVersion] = useState("");
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<"idle" | "downloading" | "ready">("idle");
   const [updateCheckMsg, setUpdateCheckMsg] = useState("");
@@ -797,6 +797,11 @@ export function Dashboard({ theme, setTheme }: DashboardProps) {
   useEffect(() => {
     if (settings.theme) setTheme(settings.theme as "dark" | "light");
   }, [settings.theme, setTheme]);
+
+  // Read the version from the compiled binary — automatically correct for every release.
+  useEffect(() => {
+    getVersion().then(setAppVersion).catch(() => setAppVersion("?"));
+  }, []);
 
   /* Check for updates on mount + when triggered from tray */
   const checkForUpdate = useCallback(async (manual = false) => {

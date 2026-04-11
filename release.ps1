@@ -136,13 +136,21 @@ $pkgRaw = $pkgRaw -replace '"version"\s*:\s*"[^"]+"', "`"version`": `"$next`""
 Set-Content $pkgFile $pkgRaw -NoNewline
 Write-Host "  Updated: package.json"
 
-# 4. Git commit + tag ─────────────────────────────────────────────────────────
+# 4. Update Cargo.toml ────────────────────────────────────────────────────────
+$cargoFile = "src-tauri\Cargo.toml"
+$cargoRaw = Get-Content $cargoFile -Raw
+# Only replace the first occurrence (the [package] version, not dependency versions)
+$cargoRaw = $cargoRaw -replace '(?m)^version = "[^"]+"', "version = `"$next`""
+Set-Content $cargoFile $cargoRaw -NoNewline
+Write-Host "  Updated: src-tauri/Cargo.toml"
+
+# 5. Git commit + tag ─────────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "  Committing version bump..." -ForegroundColor Yellow
 
 $tagName = "v$next"
 
-git add src-tauri/tauri.conf.json package.json
+git add src-tauri/tauri.conf.json package.json src-tauri/Cargo.toml
 git commit -m "release: $tagName"
 git tag $tagName
 

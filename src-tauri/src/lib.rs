@@ -227,10 +227,10 @@ pub fn run() {
             .focused(false);
 
             // Transparent, shadowless window so the floating pill composites over the desktop.
+            // .transparent() / .shadow() are Windows-only on Tauri v2's WebviewWindowBuilder.
+            // macOS frameless windows are already transparent when the HTML body has no background.
             #[cfg(target_os = "windows")]
             let builder = builder.transparent(true).shadow(false);
-            #[cfg(target_os = "macos")]
-            let builder = builder.transparent(true);
 
             let _widget = builder.build()?;
 

@@ -204,6 +204,21 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Delete previous releases and tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_TAG: ${{ github.ref_name }}
+        run: |
+          # List all releases except the one being published right now.
+          # Deletes the release body + all its assets, then removes the git tag.
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName \
+            --jq '.[].tagName' | while read tag; do
+            if [[ "$tag" != "$CURRENT_TAG" ]]; then
+              echo "Deleting release: $tag"
+              gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
+            fi
+          done
+
       - name: Download Windows artifacts
         uses: actions/download-artifact@v4
         with:
