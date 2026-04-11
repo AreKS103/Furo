@@ -105,14 +105,28 @@ jobs:
         run: |
           brew install cmake
 
-      - name: Build whisper.cpp sidecar (Apple Silicon)
+      - name: Build whisper.cpp sidecar (Universal — Apple Silicon + Intel)
         run: |
           git clone --depth 1 https://github.com/ggerganov/whisper.cpp.git /tmp/whisper.cpp
           cd /tmp/whisper.cpp
-          cmake -B build -DCMAKE_BUILD_TYPE=Release -DWHISPER_BUILD_SERVER=ON -DWHISPER_COREML=OFF
-          cmake --build build --config Release -j$(sysctl -n hw.logicalcpu)
-          cp build/bin/whisper-server "$GITHUB_WORKSPACE/src-tauri/binaries/whisper-server-aarch64-apple-darwin"
-          chmod +x "$GITHUB_WORKSPACE/src-tauri/binaries/whisper-server-aarch64-apple-darwin"
+
+          # Build for Apple Silicon (arm64)
+          cmake -B build-arm64 -DCMAKE_BUILD_TYPE=Release -DWHISPER_BUILD_SERVER=ON -DWHISPER_COREML=OFF \
+            -DCMAKE_OSX_ARCHITECTURES=arm64
+          cmake --build build-arm64 --config Release -j$(sysctl -n hw.logicalcpu)
+
+          # Build for Intel (x86_64)
+          cmake -B build-x86_64 -DCMAKE_BUILD_TYPE=Release -DWHISPER_BUILD_SERVER=ON -DWHISPER_COREML=OFF \
+            -DCMAKE_OSX_ARCHITECTURES=x86_64
+          cmake --build build-x86_64 --config Release -j$(sysctl -n hw.logicalcpu)
+
+          # Create universal binary via lipo
+          lipo -create \
+            build-arm64/bin/whisper-server \
+            build-x86_64/bin/whisper-server \
+            -output "$GITHUB_WORKSPACE/src-tauri/binaries/whisper-server-universal-apple-darwin"
+          chmod +x "$GITHUB_WORKSPACE/src-tauri/binaries/whisper-server-universal-apple-darwin"
+          file "$GITHUB_WORKSPACE/src-tauri/binaries/whisper-server-universal-apple-darwin"
           ls -la "$GITHUB_WORKSPACE/src-tauri/binaries/"
 
       - name: Patch tauri.conf.json for macOS
@@ -139,25 +153,25 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build Tauri (macOS app + DMG — Apple Silicon)
+      - name: Build Tauri (macOS app + DMG — Universal)
         env:
           # Ensure ort crate can download ONNX Runtime without GitHub rate limits
           GITHUB_TOKEN: ${{ github.token }}
         # app bundle is required for createUpdaterArtifacts to produce .app.tar.gz + .sig
-        run: npx tauri build --target aarch64-apple-darwin --bundles app,dmg
+        run: npx tauri build --target universal-apple-darwin --bundles app,dmg
 
       - name: List artifacts
         if: always()
         run: |
           echo "=== All bundle output ==="
-          find src-tauri/target/aarch64-apple-darwin/release/bundle/ -type f 2>/dev/null || true
+          find src-tauri/target/universal-apple-darwin/release/bundle/ -type f 2>/dev/null || true
 
       - name: Collect macOS artifacts
         run: |
           mkdir -p collected-macos
-          cp src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg collected-macos/ 2>/dev/null || true
-          cp src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz collected-macos/ 2>/dev/null || true
-          cp src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig collected-macos/ 2>/dev/null || true
+          cp src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg collected-macos/ 2>/dev/null || true
+          cp src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz collected-macos/ 2>/dev/null || true
+          cp src-tauri/target/universal-apple-darwin/release/bundle/macos/*.app.tar.gz.sig collected-macos/ 2>/dev/null || true
           echo "=== Collected macOS artifacts ==="
           ls -la collected-macos/
 
@@ -250,6 +264,10 @@ jobs:
                       'url': os.environ['WIN_URL'],
                   },
                   'darwin-aarch64': {
+                      'signature': os.environ['MAC_SIG'],
+                      'url': os.environ['MAC_URL'],
+                  },
+                  'darwin-x86_64': {
                       'signature': os.environ['MAC_SIG'],
                       'url': os.environ['MAC_URL'],
                   },
