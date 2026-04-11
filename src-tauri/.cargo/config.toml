@@ -1,3 +1,0 @@
-[build]
-# Store build artefacts outside OneDrive to prevent file-locking during sync
-target-dir = "C:/Users/alpla/AppData/Local/furo-target"

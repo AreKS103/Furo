@@ -10,7 +10,10 @@
     "tauri": "tauri",
     "release": "powershell -ExecutionPolicy Bypass -File .\\release.ps1",
     "release:minor": "powershell -ExecutionPolicy Bypass -File .\\release.ps1 -Minor",
-    "release:major": "powershell -ExecutionPolicy Bypass -File .\\release.ps1 -Major"
+    "release:major": "powershell -ExecutionPolicy Bypass -File .\\release.ps1 -Major",
+    "release:ci": "powershell -ExecutionPolicy Bypass -File .\\release.ps1 -CI",
+    "release:ci:minor": "powershell -ExecutionPolicy Bypass -File .\\release.ps1 -CI -Minor",
+    "release:ci:major": "powershell -ExecutionPolicy Bypass -File .\\release.ps1 -CI -Major"
   },
   "dependencies": {
     "@tauri-apps/api": "^2.5.0",

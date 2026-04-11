@@ -110,6 +110,48 @@ fn main() {
                     println!("cargo::warning=copying DLL to root: {}", entry.file_name().to_string_lossy());
                     std::fs::copy(&src, &dst_root_dll).unwrap();
                 }
+            } else if !name_str.contains('.') {
+                // --- macOS: extensionless sidecar binaries (e.g. whisper-server-aarch64-apple-darwin) ---
+                if let Some(base) = name_str.strip_suffix(&triple_suffix) {
+                    // Copy triple-stripped binary for dev-mode resolution
+                    let dst_short = dst_binaries.join(base);
+                    let needs_short = if dst_short.exists() {
+                        src.metadata().unwrap().modified().unwrap()
+                            > dst_short.metadata().unwrap().modified().unwrap()
+                    } else {
+                        true
+                    };
+                    if needs_short {
+                        println!("cargo::warning=copying sidecar (short name): {}", base);
+                        std::fs::copy(&src, &dst_short).unwrap();
+                    }
+
+                    // Copy triple-named binary to target root for bundler
+                    let dst_root_triple = target_profile_dir.join(entry.file_name());
+                    let needs_root = if dst_root_triple.exists() {
+                        src.metadata().unwrap().modified().unwrap()
+                            > dst_root_triple.metadata().unwrap().modified().unwrap()
+                    } else {
+                        true
+                    };
+                    if needs_root {
+                        println!("cargo::warning=copying sidecar to root: {}", name_str);
+                        std::fs::copy(&src, &dst_root_triple).unwrap();
+                    }
+
+                    // Copy short-named binary to target root for dev sidecar resolution
+                    let dst_root_short = target_profile_dir.join(base);
+                    let needs_root_short = if dst_root_short.exists() {
+                        src.metadata().unwrap().modified().unwrap()
+                            > dst_root_short.metadata().unwrap().modified().unwrap()
+                    } else {
+                        true
+                    };
+                    if needs_root_short {
+                        println!("cargo::warning=copying sidecar short to root: {}", base);
+                        std::fs::copy(&src, &dst_root_short).unwrap();
+                    }
+                }
             }
         }
 

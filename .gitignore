@@ -5,6 +5,9 @@ node_modules/
 dist/
 src-tauri/target/
 
+# ── Local cargo config (OneDrive workaround, machine-specific) ──
+src-tauri/.cargo/config.toml
+
 # ── OS files ────────────────────────────────────────────
 .DS_Store
 Thumbs.db

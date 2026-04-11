@@ -48,11 +48,18 @@ impl SidecarManager {
             .map_err(|e| format!("Failed to locate current executable: {}", e))?;
         let exe_dir = exe_dir.parent()
             .ok_or_else(|| "Executable has no parent directory".to_string())?;
+
+        // On Windows the sidecar has a .exe extension; on macOS it has none.
+        let sidecar_bin = if cfg!(target_os = "windows") {
+            "whisper-server.exe"
+        } else {
+            "whisper-server"
+        };
         let sidecar_name: &str =
-            if exe_dir.join("whisper-server.exe").exists()
-                && !exe_dir.join("binaries").join("whisper-server.exe").exists()
+            if exe_dir.join(sidecar_bin).exists()
+                && !exe_dir.join("binaries").join(sidecar_bin).exists()
             {
-                // Production (NSIS): binary at root level, no binaries/ subdir
+                // Production (NSIS / .app bundle): binary at root level, no binaries/ subdir
                 "whisper-server"
             } else {
                 // Dev (build.rs): binary in binaries/ subdir

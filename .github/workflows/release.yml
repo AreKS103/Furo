@@ -1,0 +1,248 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Furo — Cross-Platform Release Workflow
+#
+# Builds Windows (NSIS) and macOS (DMG) installers, signs updater artifacts,
+# generates latest.json, and publishes a GitHub Release.
+#
+# Trigger: Push a version tag (v*) created by release.ps1.
+# Secrets required:
+#   TAURI_SIGNING_PRIVATE_KEY  — minisign private key (long base64 string)
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD — key password (short string, or empty)
+# ──────────────────────────────────────────────────────────────────────────────
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# Only one release at a time
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+  TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+
+jobs:
+  # ════════════════════════════════════════════════════════════════════════════
+  # Windows build (NSIS installer)
+  # ════════════════════════════════════════════════════════════════════════════
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          cache-on-failure: true
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri (Windows NSIS)
+        run: npx tauri build --bundles nsis
+
+      - name: List artifacts
+        shell: pwsh
+        run: |
+          Get-ChildItem -Path "target\release\bundle\nsis" -Recurse | Format-Table Name, Length
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-artifacts
+          path: |
+            target/release/bundle/nsis/*.exe
+            target/release/bundle/nsis/*.nsis.zip
+            target/release/bundle/nsis/*.nsis.zip.sig
+          if-no-files-found: error
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # macOS build (DMG installer)
+  # ════════════════════════════════════════════════════════════════════════════
+  build-macos:
+    runs-on: macos-14   # Apple Silicon (M1) runner
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Setup Rust (aarch64 + x86_64)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          cache-on-failure: true
+
+      - name: Install system dependencies
+        run: |
+          brew install cmake
+
+      - name: Build whisper.cpp sidecar (Apple Silicon)
+        run: |
+          git clone --depth 1 https://github.com/ggerganov/whisper.cpp.git /tmp/whisper.cpp
+          cd /tmp/whisper.cpp
+          cmake -B build -DCMAKE_BUILD_TYPE=Release -DWHISPER_BUILD_SERVER=ON -DWHISPER_COREML=OFF
+          cmake --build build --config Release -j$(sysctl -n hw.logicalcpu)
+          cp build/bin/whisper-server "$GITHUB_WORKSPACE/src-tauri/binaries/whisper-server-aarch64-apple-darwin"
+          chmod +x "$GITHUB_WORKSPACE/src-tauri/binaries/whisper-server-aarch64-apple-darwin"
+          ls -la "$GITHUB_WORKSPACE/src-tauri/binaries/"
+
+      - name: Patch tauri.conf.json for macOS
+        shell: bash
+        run: |
+          # Remove Windows-only DLL resources and fix bundle identifier
+          python3 -c "
+          import json, sys
+          with open('src-tauri/tauri.conf.json', 'r') as f:
+              conf = json.load(f)
+          # Remove Windows DLL resources (not needed on macOS)
+          conf['bundle']['resources'] = {}
+          # Fix identifier — .app suffix conflicts on macOS
+          if conf['identifier'].endswith('.app'):
+              conf['identifier'] = conf['identifier'][:-4] + '.desktop'
+          with open('src-tauri/tauri.conf.json', 'w') as f:
+              json.dump(conf, f, indent=2)
+          print('Patched tauri.conf.json for macOS')
+          "
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri (macOS DMG — Apple Silicon)
+        run: npx tauri build --target aarch64-apple-darwin --bundles dmg
+
+      - name: List artifacts
+        run: |
+          ls -la target/aarch64-apple-darwin/release/bundle/dmg/ || true
+          ls -la target/aarch64-apple-darwin/release/bundle/macos/ || true
+
+      - name: Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-artifacts
+          path: |
+            target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
+            target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
+            target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
+          if-no-files-found: error
+
+  # ════════════════════════════════════════════════════════════════════════════
+  # Publish GitHub Release with all platform artifacts + latest.json
+  # ════════════════════════════════════════════════════════════════════════════
+  publish:
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Windows artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-artifacts
+          path: artifacts/windows
+
+      - name: Download macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-artifacts
+          path: artifacts/macos
+
+      - name: List all artifacts
+        run: find artifacts/ -type f | sort
+
+      - name: Extract version from tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Generate latest.json
+        shell: bash
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          TAG="${GITHUB_REF_NAME}"
+          PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          REPO="AreKS103/Furo"
+
+          # Read Windows NSIS signature
+          WIN_SIG_FILE=$(find artifacts/windows -name "*.nsis.zip.sig" | head -1)
+          WIN_SIG=$(cat "$WIN_SIG_FILE" | tr -d '\n\r')
+          WIN_ZIP=$(find artifacts/windows -name "*.nsis.zip" ! -name "*.sig" | head -1)
+          WIN_ZIP_NAME=$(basename "$WIN_ZIP")
+          WIN_URL="https://github.com/${REPO}/releases/download/${TAG}/${WIN_ZIP_NAME}"
+
+          # Read macOS updater signature
+          MAC_SIG_FILE=$(find artifacts/macos -name "*.app.tar.gz.sig" | head -1)
+          MAC_SIG=$(cat "$MAC_SIG_FILE" | tr -d '\n\r')
+          MAC_TAR=$(find artifacts/macos -name "*.app.tar.gz" ! -name "*.sig" | head -1)
+          MAC_TAR_NAME=$(basename "$MAC_TAR")
+          MAC_URL="https://github.com/${REPO}/releases/download/${TAG}/${MAC_TAR_NAME}"
+
+          # Generate latest.json via python (avoids heredoc/jq quoting issues with signatures)
+          export VERSION TAG PUB_DATE WIN_SIG WIN_URL MAC_SIG MAC_URL
+          python3 -c "
+          import json, os
+          data = {
+              'version': os.environ['VERSION'],
+              'notes': 'Furo ' + os.environ['TAG'],
+              'pub_date': os.environ['PUB_DATE'],
+              'platforms': {
+                  'windows-x86_64': {
+                      'signature': os.environ['WIN_SIG'],
+                      'url': os.environ['WIN_URL'],
+                  },
+                  'darwin-aarch64': {
+                      'signature': os.environ['MAC_SIG'],
+                      'url': os.environ['MAC_URL'],
+                  },
+              },
+          }
+          with open('artifacts/latest.json', 'w') as f:
+              json.dump(data, f, indent=2)
+          "
+
+          echo "Generated latest.json:"
+          cat artifacts/latest.json
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Furo ${{ github.ref_name }}
+          body: "Furo ${{ github.ref_name }}"
+          draft: false
+          prerelease: false
+          files: |
+            artifacts/windows/*.exe
+            artifacts/windows/*.nsis.zip
+            artifacts/windows/*.nsis.zip.sig
+            artifacts/macos/*.dmg
+            artifacts/macos/*.app.tar.gz
+            artifacts/macos/*.app.tar.gz.sig
+            artifacts/latest.json
