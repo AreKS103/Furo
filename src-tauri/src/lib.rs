@@ -206,7 +206,10 @@ pub fn run() {
             let widget_w: f64 = 40.0;
             let widget_h: f64 = 10.0;
             let x = (screen_size.width as f64 / scale - widget_w) / 2.0;
-            let y = screen_size.height as f64 / scale - widget_h - 60.0;
+            // macOS Dock occupies ~70-90px at bottom; use a larger offset so
+            // the pill isn't hidden behind it.
+            let bottom_offset: f64 = if cfg!(target_os = "macos") { 100.0 } else { 60.0 };
+            let y = screen_size.height as f64 / scale - widget_h - bottom_offset;
 
             let builder = WebviewWindowBuilder::new(
                 app,
@@ -223,9 +226,11 @@ pub fn run() {
             .resizable(false)
             .focused(false);
 
-            // .transparent() / .shadow() are not available on macOS WebviewWindowBuilder
+            // Transparent, shadowless window so the floating pill composites over the desktop.
             #[cfg(target_os = "windows")]
             let builder = builder.transparent(true).shadow(false);
+            #[cfg(target_os = "macos")]
+            let builder = builder.transparent(true);
 
             let _widget = builder.build()?;
 

@@ -162,10 +162,13 @@ export function FloatingWidget() {
         const curSize = await win.outerSize();
         const wW = curSize.width;
         const wH = curSize.height;
+        const isMac = navigator.platform.toUpperCase().includes("MAC");
+        const bottomOffset = isMac ? 100 : 60;
+
         await win.setPosition(
           new PhysicalPosition(
             mx + Math.round((mw - wW) / 2),
-            my + mh - wH - Math.round(60 * scale),
+            my + mh - wH - Math.round(bottomOffset * scale),
           ),
         );
       } catch {

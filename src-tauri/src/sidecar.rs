@@ -64,21 +64,29 @@ impl SidecarManager {
             };
         log::info!("whisper-server sidecar name resolved to: {}", sidecar_name);
 
+        let port_str = config::WHISPER_SERVER_PORT.to_string();
+        let mut args = vec![
+            "--model",
+            model_str,
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &port_str,
+            "--inference-path",
+            "/v1/audio/transcriptions",
+        ];
+
+        // Flash Attention is a CUDA-only optimisation — not available on macOS
+        // (Apple Silicon uses Metal, not CUDA). Passing it crashes the sidecar.
+        if !cfg!(target_os = "macos") {
+            args.push("--flash-attn");
+        }
+
         let cmd = app
             .shell()
             .sidecar(sidecar_name)
             .map_err(|e| format!("Failed to create whisper-server sidecar command: {}", e))?
-            .args([
-                "--model",
-                model_str,
-                "--host",
-                "127.0.0.1",
-                "--port",
-                &config::WHISPER_SERVER_PORT.to_string(),
-                "--flash-attn",
-                "--inference-path",
-                "/v1/audio/transcriptions",
-            ]);
+            .args(&args);
 
         let (mut rx, child) = cmd
             .spawn()

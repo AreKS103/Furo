@@ -59,6 +59,7 @@ extern "C" {
     ) -> CFMachPortRef;
     fn CGEventGetIntegerValueField(event: CGEventRef, field: u32) -> i64;
     fn CGEventGetFlags(event: CGEventRef) -> u64;
+    fn CGEventTapEnable(tap: CFMachPortRef, enable: bool);
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
@@ -180,6 +181,13 @@ static HOOK_SENDER: std::sync::Mutex<Option<Sender<HotkeyEvent>>> = std::sync::M
 /// Previous modifier flags — used to detect modifier-only press/release events.
 static PREV_FLAGS: AtomicU64 = AtomicU64::new(0);
 
+/// Stored CGEventTap (CFMachPortRef) so the callback can re-enable after timeout.
+static EVENT_TAP_PORT: std::sync::Mutex<Option<SendPtr>> = std::sync::Mutex::new(None);
+
+/// macOS disables an event tap if the callback takes too long. The system
+/// sends this event type to notify us; we must call CGEventTapEnable to revive it.
+const KCG_EVENT_TAP_DISABLED_BY_TIMEOUT: CGEventType = 0xFFFFFFFE;
+
 /// CGEvent tap callback — translates macOS events into `HotkeyEvent`s.
 extern "C" fn event_tap_callback(
     _proxy: CGEventTapProxy,
@@ -187,6 +195,15 @@ extern "C" fn event_tap_callback(
     event: CGEventRef,
     _user_info: *mut c_void,
 ) -> CGEventRef {
+    // Handle tap-disabled-by-timeout before locking the sender — re-enable tap immediately.
+    if event_type == KCG_EVENT_TAP_DISABLED_BY_TIMEOUT {
+        log::warn!("macOS disabled event tap (timeout) — re-enabling.");
+        if let Some(SendPtr(tap)) = *EVENT_TAP_PORT.lock().unwrap() {
+            unsafe { CGEventTapEnable(tap, true) };
+        }
+        return event;
+    }
+
     let sender_guard = HOOK_SENDER.lock().unwrap();
     let Some(sender) = sender_guard.as_ref() else {
         return event;
@@ -321,7 +338,7 @@ impl HotkeyListener {
                     let tap = CGEventTapCreate(
                         KCG_SESSION_EVENT_TAP,
                         KCG_HEAD_INSERT_EVENT_TAP,
-                        0, // kCGEventTapOptionDefault (active tap)
+                        1, // kCGEventTapOptionListenOnly — observe-only, no Accessibility needed
                         mask,
                         event_tap_callback,
                         std::ptr::null_mut(),
@@ -329,11 +346,14 @@ impl HotkeyListener {
 
                     if tap.is_null() {
                         log::error!(
-                            "CGEventTapCreate failed — Accessibility permission not granted. \
-                             Go to System Preferences > Privacy & Security > Accessibility and add Furo."
+                            "CGEventTapCreate failed — Input Monitoring permission not granted. \
+                             Go to System Settings > Privacy & Security > Input Monitoring and add Furo."
                         );
                         return;
                     }
+
+                    // Store tap handle so the callback can re-enable on timeout.
+                    *EVENT_TAP_PORT.lock().unwrap() = Some(SendPtr(tap));
 
                     let source = CFMachPortCreateRunLoopSource(std::ptr::null(), tap, 0);
                     let run_loop = CFRunLoopGetCurrent();
@@ -347,6 +367,7 @@ impl HotkeyListener {
                     CFRunLoopRun(); // Blocks until CFRunLoopStop is called.
 
                     // Cleanup
+                    *EVENT_TAP_PORT.lock().unwrap() = None;
                     CFRelease(source);
                     CFRelease(tap);
                     *TAP_RUNLOOP.lock().unwrap() = None;
