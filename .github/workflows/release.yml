@@ -137,11 +137,12 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build Tauri (macOS DMG + Updater — Apple Silicon)
+      - name: Build Tauri (macOS app + DMG — Apple Silicon)
         env:
           # Ensure ort crate can download ONNX Runtime without GitHub rate limits
           GITHUB_TOKEN: ${{ github.token }}
-        run: npx tauri build --target aarch64-apple-darwin --bundles dmg,updater
+        # app bundle is required for createUpdaterArtifacts to produce .app.tar.gz + .sig
+        run: npx tauri build --target aarch64-apple-darwin --bundles app,dmg
 
       - name: List artifacts
         if: always()
