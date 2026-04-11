@@ -419,6 +419,8 @@ function SettingsPage({
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [soundVolume, setSoundVolume] = useState(5); // 0–100 integer, stored as 0.0–1.0
   const [appVersion, setAppVersion] = useState("");
+  const [diagOutput, setDiagOutput] = useState("");
+  const [diagLoading, setDiagLoading] = useState(false);
 
   // Read the version from the compiled binary — automatically correct for every release.
   useEffect(() => {
@@ -771,6 +773,27 @@ function SettingsPage({
               {updateCheckMsg && updateCheckMsg !== "Checking…" && (
                 <p className="mt-2 text-[12px] text-warm-500 dark:text-zinc-400">{updateCheckMsg}</p>
               )}
+              <div className="mt-3 border-t border-cream-200 pt-3 dark:border-zinc-700">
+                <button
+                  onClick={async () => {
+                    setDiagLoading(true);
+                    try {
+                      const result = await invoke<string>("diagnose_macos");
+                      setDiagOutput(result);
+                    } catch (e) {
+                      setDiagOutput(`Diagnostic error: ${e}`);
+                    }
+                    setDiagLoading(false);
+                  }}
+                  disabled={diagLoading}
+                  className="rounded-lg border border-cream-300 px-3 py-1.5 text-[12px] font-medium text-warm-700 transition hover:bg-cream-100 disabled:opacity-50 dark:border-zinc-600 dark:text-zinc-300 dark:hover:bg-zinc-700"
+                >
+                  {diagLoading ? "Running…" : "Run Diagnostics"}
+                </button>
+                {diagOutput && (
+                  <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-cream-50 p-2.5 text-[11px] leading-relaxed text-warm-700 dark:bg-zinc-900 dark:text-zinc-300">{diagOutput}</pre>
+                )}
+              </div>
             </div>
           </section>
         </div>
@@ -852,12 +875,25 @@ export function Dashboard({ theme, setTheme }: DashboardProps) {
       setUpdateStatus("downloading");
       await update.downloadAndInstall();
       setUpdateStatus("ready");
-      // Tauri will restart automatically after install
       const { relaunch } = await import("@tauri-apps/plugin-process");
       await relaunch();
     } catch (e) {
       setUpdateStatus("idle");
-      console.warn("[updater] install failed:", e);
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("[updater] install failed:", msg);
+
+      // Show specific guidance for the known macOS permission error
+      if (msg.includes("Failed to move") || msg.includes("PermissionDenied") || msg.includes("permission")) {
+        setUpdateCheckMsg("Update failed — macOS blocked the install. Re-download from GitHub Releases.");
+      } else {
+        setUpdateCheckMsg(`Update failed: ${msg}`);
+      }
+
+      // Prevent the update dialog from re-triggering in a loop
+      updateRef.current = null;
+      setUpdateAvailable(false);
+
+      setTimeout(() => setUpdateCheckMsg(""), 10000);
     }
   }, []);
 

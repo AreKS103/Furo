@@ -134,6 +134,13 @@ jobs:
           chmod +x "$GITHUB_WORKSPACE/src-tauri/binaries/whisper-server-aarch64-apple-darwin"
           chmod +x "$GITHUB_WORKSPACE/src-tauri/binaries/whisper-server-x86_64-apple-darwin"
           chmod +x "$GITHUB_WORKSPACE/src-tauri/binaries/whisper-server-universal-apple-darwin"
+
+          # Ad-hoc code sign the sidecar binaries so macOS Gatekeeper doesn't
+          # silently SIGKILL them when spawned from inside the .app bundle.
+          codesign --force --sign - "$GITHUB_WORKSPACE/src-tauri/binaries/whisper-server-aarch64-apple-darwin"
+          codesign --force --sign - "$GITHUB_WORKSPACE/src-tauri/binaries/whisper-server-x86_64-apple-darwin"
+          codesign --force --sign - "$GITHUB_WORKSPACE/src-tauri/binaries/whisper-server-universal-apple-darwin"
+
           file "$GITHUB_WORKSPACE/src-tauri/binaries/whisper-server-aarch64-apple-darwin"
           file "$GITHUB_WORKSPACE/src-tauri/binaries/whisper-server-x86_64-apple-darwin"
           file "$GITHUB_WORKSPACE/src-tauri/binaries/whisper-server-universal-apple-darwin"
@@ -169,6 +176,35 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         # app bundle is required for createUpdaterArtifacts to produce .app.tar.gz + .sig
         run: npx tauri build --target universal-apple-darwin --bundles app,dmg
+
+      - name: Ad-hoc sign the .app bundle and re-package updater artifact
+        run: |
+          APP_BUNDLE=$(find src-tauri/target/universal-apple-darwin/release/bundle/macos -name "*.app" -maxdepth 1 | head -1)
+          if [ -z "$APP_BUNDLE" ]; then
+            echo "::error::No .app bundle found"
+            exit 1
+          fi
+
+          echo "Signing $APP_BUNDLE (deep, ad-hoc)..."
+          codesign --force --deep --sign - "$APP_BUNDLE"
+          codesign -dvv "$APP_BUNDLE" 2>&1 || true
+
+          # Re-create the .app.tar.gz with the signed bundle so the updater
+          # delivers a signed app (the original tar.gz has the unsigned copy).
+          TAR_GZ=$(find src-tauri/target/universal-apple-darwin/release/bundle/macos -name "*.app.tar.gz" ! -name "*.sig" | head -1)
+          if [ -n "$TAR_GZ" ]; then
+            APP_NAME=$(basename "$APP_BUNDLE")
+            BUNDLE_DIR=$(dirname "$APP_BUNDLE")
+            echo "Re-packaging $TAR_GZ with signed bundle..."
+            tar czf "$TAR_GZ" -C "$BUNDLE_DIR" "$APP_NAME"
+
+            # Re-sign the tar.gz with the Tauri updater key
+            if [ -n "$TAURI_SIGNING_PRIVATE_KEY" ]; then
+              npx --yes @tauri-apps/cli signer sign --private-key "$TAURI_SIGNING_PRIVATE_KEY" \
+                ${TAURI_SIGNING_PRIVATE_KEY_PASSWORD:+--password "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD"} \
+                "$TAR_GZ"
+            fi
+          fi
 
       - name: List artifacts
         if: always()

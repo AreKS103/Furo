@@ -114,6 +114,139 @@ fn set_rebind_mode(active: bool) {
     log::info!("Rebind mode: {}", active);
 }
 
+/// macOS diagnostic command — gathers system state for remote debugging.
+/// Returns a multi-line string with sidecar status, permissions, quarantine,
+/// model paths, and audio device info.
+#[tauri::command]
+fn diagnose_macos(pipeline: tauri::State<'_, Arc<FuroPipeline>>) -> String {
+    let mut lines: Vec<String> = Vec::new();
+
+    lines.push(format!("OS: {}", std::env::consts::OS));
+    lines.push(format!("ARCH: {}", std::env::consts::ARCH));
+
+    // Executable path
+    if let Ok(exe) = std::env::current_exe() {
+        lines.push(format!("EXE: {}", exe.display()));
+        if let Some(exe_dir) = exe.parent() {
+            // Check sidecar binary exists
+            let sidecar_name = if cfg!(target_os = "windows") { "whisper-server.exe" } else { "whisper-server" };
+            let sidecar_path = exe_dir.join(sidecar_name);
+            let sidecar_exists = sidecar_path.exists();
+            lines.push(format!("SIDECAR_PATH: {}", sidecar_path.display()));
+            lines.push(format!("SIDECAR_EXISTS: {}", sidecar_exists));
+
+            // Check execute permission and quarantine on macOS
+            #[cfg(target_os = "macos")]
+            {
+                if sidecar_exists {
+                    // Check quarantine xattr
+                    if let Ok(output) = std::process::Command::new("xattr")
+                        .arg("-l")
+                        .arg(&sidecar_path)
+                        .output()
+                    {
+                        let xattrs = String::from_utf8_lossy(&output.stdout);
+                        let has_quarantine = xattrs.contains("com.apple.quarantine");
+                        lines.push(format!("QUARANTINE: {}", has_quarantine));
+                        if has_quarantine {
+                            lines.push(format!("XATTRS: {}", xattrs.trim()));
+                        }
+                    }
+
+                    // Check code signature
+                    if let Ok(output) = std::process::Command::new("codesign")
+                        .args(["-dvv", &sidecar_path.to_string_lossy()])
+                        .output()
+                    {
+                        let stderr = String::from_utf8_lossy(&output.stderr);
+                        if stderr.contains("not signed") {
+                            lines.push("CODESIGN: not signed".to_string());
+                        } else if stderr.contains("valid on disk") {
+                            lines.push("CODESIGN: signed (valid)".to_string());
+                        } else {
+                            lines.push(format!("CODESIGN: {}", stderr.lines().next().unwrap_or("unknown")));
+                        }
+                    }
+
+                    // Check execute permission
+                    if let Ok(meta) = std::fs::metadata(&sidecar_path) {
+                        use std::os::unix::fs::PermissionsExt;
+                        let mode = meta.permissions().mode();
+                        lines.push(format!("PERMISSIONS: {:o}", mode));
+                        lines.push(format!("EXECUTABLE: {}", mode & 0o111 != 0));
+                    }
+                }
+            }
+        }
+    }
+
+    // Whisper server health check
+    let health_url = format!("{}/health", crate::config::WHISPER_SERVER_URL);
+    lines.push(format!("WHISPER_URL: {}", health_url));
+    match reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(3))
+        .build()
+    {
+        Ok(client) => match client.get(&health_url).send() {
+            Ok(resp) => {
+                lines.push(format!("WHISPER_STATUS: {} {}", resp.status().as_u16(), resp.status()));
+                if let Ok(body) = resp.text() {
+                    lines.push(format!("WHISPER_BODY: {}", body.chars().take(200).collect::<String>()));
+                }
+            }
+            Err(e) => lines.push(format!("WHISPER_ERROR: {}", e)),
+        },
+        Err(e) => lines.push(format!("HTTP_CLIENT_ERROR: {}", e)),
+    }
+
+    // Pipeline state
+    let ready = pipeline.is_ready();
+    let mode = pipeline.current_mode();
+    lines.push(format!("PIPELINE_READY: {}", ready));
+    lines.push(format!("PIPELINE_MODE: {:?}", mode));
+
+    // Model paths
+    let models_dir = pipeline.models_dir();
+    lines.push(format!("MODELS_DIR: {}", models_dir.display()));
+    lines.push(format!("MODELS_DIR_EXISTS: {}", models_dir.exists()));
+    let whisper_model = models_dir.join(crate::config::GGML_MODEL_FILENAME);
+    lines.push(format!("WHISPER_MODEL: {}", whisper_model.display()));
+    lines.push(format!("WHISPER_MODEL_EXISTS: {}", whisper_model.exists()));
+    if whisper_model.exists() {
+        if let Ok(meta) = whisper_model.metadata() {
+            lines.push(format!("WHISPER_MODEL_SIZE_MB: {:.0}", meta.len() as f64 / 1_048_576.0));
+        }
+    }
+    let vad_model = models_dir.join(crate::config::VAD_MODEL_FILENAME);
+    lines.push(format!("VAD_MODEL_EXISTS: {}", vad_model.exists()));
+
+    // Audio devices
+    {
+        use cpal::traits::{DeviceTrait, HostTrait};
+        let host = cpal::default_host();
+        if let Some(dev) = host.default_input_device() {
+            let name = dev.description()
+                .map(|d| d.name().to_string())
+                .unwrap_or_else(|_| "unknown".into());
+            lines.push(format!("DEFAULT_MIC: {}", name));
+        } else {
+            lines.push("DEFAULT_MIC: none".to_string());
+        }
+    }
+
+    // Settings
+    let hold = pipeline.settings.get("hotkey_hold");
+    let hf = pipeline.settings.get("hotkey_handsfree");
+    let mic = pipeline.settings.get("microphone");
+    lines.push(format!("HOTKEY_HOLD: {}", hold));
+    lines.push(format!("HOTKEY_HANDSFREE: {}", hf));
+    lines.push(format!("MICROPHONE: {}", mic));
+
+    let result = lines.join("\n");
+    log::info!("diagnose_macos:\n{}", result);
+    result
+}
+
 #[tauri::command]
 fn widget_hold_start(pipeline: tauri::State<'_, Arc<FuroPipeline>>) {
     pipeline.on_hold_press();
@@ -181,6 +314,7 @@ pub fn run() {
             update_settings,
             list_microphones,
             test_pipeline,
+            diagnose_macos,
             get_autostart,
             set_autostart,
             preview_sound,

@@ -64,6 +64,28 @@ impl SidecarManager {
             };
         log::info!("whisper-server sidecar name resolved to: {}", sidecar_name);
 
+        // macOS Gatekeeper sets com.apple.quarantine on downloaded .app bundles,
+        // which silently kills unsigned embedded binaries (SIGKILL, exit code 9).
+        // Strip the quarantine xattr before spawning.
+        #[cfg(target_os = "macos")]
+        {
+            let binary_path = exe_dir.join(sidecar_bin);
+            log::info!("Removing quarantine xattr from {:?}", binary_path);
+            let _ = std::process::Command::new("xattr")
+                .args(["-dr", "com.apple.quarantine"])
+                .arg(&binary_path)
+                .output();
+            // Also strip from the entire app bundle if possible
+            if let Some(contents_dir) = exe_dir.parent() {
+                if let Some(app_dir) = contents_dir.parent() {
+                    let _ = std::process::Command::new("xattr")
+                        .args(["-dr", "com.apple.quarantine"])
+                        .arg(app_dir)
+                        .output();
+                }
+            }
+        }
+
         let port_str = config::WHISPER_SERVER_PORT.to_string();
         let mut args = vec![
             "--model",
@@ -76,11 +98,8 @@ impl SidecarManager {
             "/v1/audio/transcriptions",
         ];
 
-        // Flash Attention is a CUDA-only optimisation — not available on macOS
-        // (Apple Silicon uses Metal, not CUDA). Passing it crashes the sidecar.
-        if !cfg!(target_os = "macos") {
-            args.push("--flash-attn");
-        }
+        // Flash Attention is supported on both CUDA (Windows) and Metal (macOS).
+        args.push("--flash-attn");
 
         let cmd = app
             .shell()
@@ -136,23 +155,40 @@ impl SidecarManager {
 
         log::info!("Waiting for {} at {} ...", name, health_url);
 
+        let mut last_log = Instant::now();
+        let mut attempt = 0u32;
+
         while Instant::now() < deadline {
+            attempt += 1;
             match client.get(&health_url).send() {
                 Ok(resp) if resp.status().is_success() => {
-                    log::info!("{} is ready.", name);
+                    log::info!("{} is ready (after {} attempts).", name, attempt);
                     return Ok(());
                 }
-                _ => {
-                    std::thread::sleep(Duration::from_millis(
-                        config::SIDECAR_POLL_INTERVAL_MS,
-                    ));
+                Ok(resp) => {
+                    // Server is up but not ready (e.g. 503 = loading model)
+                    if last_log.elapsed() > Duration::from_secs(5) {
+                        log::info!("{} responded with {} — still loading...", name, resp.status());
+                        last_log = Instant::now();
+                    }
+                }
+                Err(e) => {
+                    if last_log.elapsed() > Duration::from_secs(5) {
+                        log::warn!("{} health check failed: {} (attempt {})", name, e, attempt);
+                        last_log = Instant::now();
+                    }
                 }
             }
+            std::thread::sleep(Duration::from_millis(
+                config::SIDECAR_POLL_INTERVAL_MS,
+            ));
         }
 
         Err(format!(
-            "{} did not become ready within {}s",
-            name, config::SIDECAR_STARTUP_TIMEOUT_SECS
+            "{} did not become ready within {}s ({} attempts). \
+             On macOS, check System Settings > Privacy & Security. \
+             The sidecar binary may have been blocked by Gatekeeper.",
+            name, config::SIDECAR_STARTUP_TIMEOUT_SECS, attempt
         ))
     }
 
