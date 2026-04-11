@@ -179,6 +179,8 @@ impl Transcriber {
     pub fn new() -> Self {
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(180))
+            .tcp_nodelay(true)        // disable Nagle — shaves ~0-40ms on localhost
+            .pool_idle_timeout(std::time::Duration::from_secs(300)) // keep connection warm
             .build()
             .expect("Failed to build HTTP client");
 
@@ -206,6 +208,8 @@ impl Transcriber {
             return String::new();
         }
 
+        let t0 = Instant::now();
+
         // Convert i16 → f32 in [-1.0, 1.0]
         let mut audio_f32: Vec<f32> = audio_i16
             .iter()
@@ -216,11 +220,13 @@ impl Transcriber {
         self.dsp.process(&mut audio_f32);
 
         let duration_s = audio_f32.len() as f64 / config::AUDIO_RATE as f64;
-        log::debug!("Transcribing {:.2}s of audio via HTTP...", duration_s);
-
-        let t0 = Instant::now();
+        let t_dsp = t0.elapsed();
+        log::info!("[perf] DSP: {:.1}ms for {:.2}s audio", t_dsp.as_secs_f64() * 1000.0, duration_s);
 
         let wav_data = encode_wav_f32(&audio_f32, config::AUDIO_RATE);
+        // Drop the f32 buffer immediately — no longer needed, frees memory before HTTP
+        drop(audio_f32);
+        let t_encode = t0.elapsed();
 
         let file_part = reqwest::blocking::multipart::Part::bytes(wav_data)
             .file_name("audio.wav")
@@ -236,6 +242,9 @@ impl Transcriber {
             .text("language", lang_value.to_string())
             .text("response_format", "text")
             .text("prompt", config::INITIAL_PROMPT.to_string());
+
+        let t_send = t0.elapsed();
+        log::info!("[perf] encode+form: {:.1}ms", (t_send - t_dsp).as_secs_f64() * 1000.0);
 
         let response = match self.client.post(&self.endpoint).multipart(form).send() {
             Ok(r) => r,
@@ -260,6 +269,9 @@ impl Transcriber {
             }
         };
 
+        let t_http = t0.elapsed();
+        log::info!("[perf] HTTP round-trip: {:.1}ms", (t_http - t_send).as_secs_f64() * 1000.0);
+
         // Post-processing: strip fillers and stutters
         text = FILLER_RE.replace_all(&text, "").to_string();
         text = STUTTER_RE.replace_all(&text, "$1").to_string();
@@ -274,8 +286,12 @@ impl Transcriber {
             text.clone()
         };
         log::info!(
-            "Transcribed in {:.2}s (RTF {:.2}x): {}",
+            "[perf] total={:.2}s (DSP {:.1}ms + encode {:.1}ms + HTTP {:.1}ms + post {:.1}ms) RTF {:.2}x: {}",
             elapsed.as_secs_f64(),
+            t_dsp.as_secs_f64() * 1000.0,
+            (t_encode - t_dsp).as_secs_f64() * 1000.0,
+            (t_http - t_encode).as_secs_f64() * 1000.0,
+            (elapsed - t_http).as_secs_f64() * 1000.0,
             rtf,
             preview
         );

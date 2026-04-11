@@ -66,7 +66,10 @@
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDkzMDhEQjA3NTU0QkI5OTkKUldTWnVVdFZCOXNJazZNb29udTYxUHl0UmRybzlUMkNOanZ4bENUWXNEbllPbDJmeGhVWXdDSVQK",
       "endpoints": [
         "https://github.com/AreKS103/Furo/releases/latest/download/latest.json"
-      ]
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
     }
   }
 }

@@ -185,6 +185,7 @@ impl SidecarManager {
         name: &str,
         sidecar_exited: &AtomicBool,
         stderr_capture: &parking_lot::Mutex<Vec<String>>,
+        progress_cb: Option<&dyn Fn(&str)>,
     ) -> Result<(), String> {
         let health_url = format!("{}/health", base_url);
         let client = reqwest::blocking::Client::builder()
@@ -194,8 +195,9 @@ impl SidecarManager {
 
         let deadline =
             Instant::now() + Duration::from_secs(config::SIDECAR_STARTUP_TIMEOUT_SECS);
+        let start = Instant::now();
 
-        log::info!("Waiting for {} at {} ...", name, health_url);
+        log::info!("Waiting for {} at {} (timeout {}s)...", name, health_url, config::SIDECAR_STARTUP_TIMEOUT_SECS);
 
         let mut last_log = Instant::now();
         let mut attempt = 0u32;
@@ -206,7 +208,7 @@ impl SidecarManager {
                 let lines = stderr_capture.lock();
                 let tail: Vec<&str> = lines.iter().rev().take(15).map(|s| s.as_str()).collect();
                 let tail: String = tail.into_iter().rev().collect::<Vec<_>>().join("\n");
-                return Err(format!(
+                let msg = format!(
                     "{} crashed before becoming ready.\nLast stderr output:\n{}",
                     name,
                     if tail.is_empty() {
@@ -214,7 +216,9 @@ impl SidecarManager {
                     } else {
                         tail
                     }
-                ));
+                );
+                log::error!("{}", msg);
+                return Err(msg);
             }
 
             attempt += 1;
@@ -226,13 +230,35 @@ impl SidecarManager {
                 Ok(resp) => {
                     // Server is up but not ready (e.g. 503 = loading model)
                     if last_log.elapsed() > Duration::from_secs(5) {
-                        log::info!("{} responded with {} — still loading...", name, resp.status());
+                        let elapsed = start.elapsed().as_secs();
+                        let msg = format!(
+                            "{} responded {} — loading model… ({}s / {}s)",
+                            name,
+                            resp.status(),
+                            elapsed,
+                            config::SIDECAR_STARTUP_TIMEOUT_SECS
+                        );
+                        log::info!("{}", msg);
+                        if let Some(cb) = &progress_cb {
+                            cb(&msg);
+                        }
                         last_log = Instant::now();
                     }
                 }
                 Err(e) => {
                     if last_log.elapsed() > Duration::from_secs(5) {
-                        log::warn!("{} health check failed: {} (attempt {})", name, e, attempt);
+                        let elapsed = start.elapsed().as_secs();
+                        let msg = format!(
+                            "{} not reachable yet ({}s / {}s): {}",
+                            name,
+                            elapsed,
+                            config::SIDECAR_STARTUP_TIMEOUT_SECS,
+                            e
+                        );
+                        log::warn!("{}", msg);
+                        if let Some(cb) = &progress_cb {
+                            cb(&format!("Waiting for whisper server… ({}s)", elapsed));
+                        }
                         last_log = Instant::now();
                     }
                 }

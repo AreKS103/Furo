@@ -848,12 +848,16 @@ export function Dashboard({ theme, setTheme }: DashboardProps) {
   const checkForUpdate = useCallback(async (manual = false) => {
     try {
       if (manual) setUpdateCheckMsg("Checking…");
+      console.log("[updater] checkForUpdate called, manual =", manual);
       const { check } = await import("@tauri-apps/plugin-updater");
+      console.log("[updater] plugin imported, calling check()…");
       const update = await check();
+      console.log("[updater] check() result:", update ? `v${update.version} available` : "no update");
       if (update) {
         // Don't re-show a version that already failed to install
         // unless the user explicitly triggered a manual check.
         if (!manual && failedVersionRef.current === update.version) {
+          console.log("[updater] skipping — version", update.version, "previously failed");
           return;
         }
         updateRef.current = update;
@@ -864,11 +868,12 @@ export function Dashboard({ theme, setTheme }: DashboardProps) {
         setTimeout(() => setUpdateCheckMsg(""), 4000);
       }
     } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      console.error("[updater] check failed:", msg, e);
       if (manual) {
         setUpdateCheckMsg("Update check failed — check your connection.");
         setTimeout(() => setUpdateCheckMsg(""), 5000);
       }
-      console.warn("[updater]", e);
     }
   }, []);
 
@@ -893,24 +898,72 @@ export function Dashboard({ theme, setTheme }: DashboardProps) {
 
   const installUpdate = useCallback(async () => {
     const update = updateRef.current;
-    if (!update) return;
+    if (!update) {
+      console.error("[updater] installUpdate called but no update object");
+      return;
+    }
     try {
+      console.log("[updater] starting update to v" + update.version);
+
+      // ── Phase 1: Download ──────────────────────────────────────────────
       setUpdateStatus("downloading");
-      await update.downloadAndInstall();
+      let downloaded = 0;
+      let contentLength = 0;
+      const downloadStart = Date.now();
+      console.log("[updater] calling download()…");
+
+      await update.download((event) => {
+        switch (event.event) {
+          case "Started":
+            contentLength = event.data.contentLength ?? 0;
+            console.log("[updater] download started, size:", contentLength, "bytes");
+            break;
+          case "Progress":
+            downloaded += event.data.chunkLength;
+            if (contentLength > 0) {
+              const pct = ((downloaded / contentLength) * 100).toFixed(1);
+              // Log every ~10% to avoid flooding console
+              if (downloaded % Math.max(1, Math.floor(contentLength / 10)) < event.data.chunkLength) {
+                console.log(`[updater] download progress: ${pct}% (${downloaded}/${contentLength})`);
+              }
+            }
+            break;
+          case "Finished":
+            console.log("[updater] download finished in", Date.now() - downloadStart, "ms");
+            break;
+        }
+      });
+
+      // ── Phase 2: Install ───────────────────────────────────────────────
+      console.log("[updater] calling install()…");
+      const installStart = Date.now();
+      await update.install();
+      console.log("[updater] install() completed in", Date.now() - installStart, "ms");
+
+      // ── Phase 3: Relaunch ──────────────────────────────────────────────
       setUpdateStatus("ready");
+      console.log("[updater] relaunching…");
       const { relaunch } = await import("@tauri-apps/plugin-process");
       await relaunch();
     } catch (e) {
       setUpdateStatus("idle");
       const msg = e instanceof Error ? e.message : String(e);
-      console.error("[updater] install failed:", msg);
+      console.error("[updater] update failed:", msg);
+      console.error("[updater] full error:", e);
 
       // Remember the failed version so auto-check won't re-show the banner.
       failedVersionRef.current = update.version;
 
-      // Show specific guidance for the known macOS permission error
+      // Show specific guidance for known failure modes
       if (msg.includes("Failed to move") || msg.includes("PermissionDenied") || msg.includes("permission")) {
-        setUpdateCheckMsg("Update failed — macOS blocked the install. Re-download from GitHub Releases.");
+        console.error("[updater] macOS permission error — app may need to be in /Applications");
+        setUpdateCheckMsg("Update failed — macOS blocked the install. Move Furo.app to /Applications and retry, or re-download from GitHub Releases.");
+      } else if (msg.includes("signature")) {
+        console.error("[updater] signature verification failed");
+        setUpdateCheckMsg("Update failed — signature mismatch. Re-download from GitHub Releases.");
+      } else if (msg.includes("network") || msg.includes("connect") || msg.includes("timeout")) {
+        console.error("[updater] network error during update");
+        setUpdateCheckMsg("Update failed — network error. Check your connection and try again.");
       } else {
         setUpdateCheckMsg(`Update failed: ${msg}`);
       }

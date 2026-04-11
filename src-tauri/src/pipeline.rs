@@ -229,7 +229,7 @@ pub struct FuroPipeline {
     recorder: Mutex<AudioRecorder>,
     vad: Mutex<Option<VoiceActivityDetector>>,
     transcriber: Mutex<Option<Transcriber>>,
-    sidecar: Mutex<SidecarManager>,
+    pub sidecar: Mutex<SidecarManager>,
     hotkey_listener: Mutex<Option<HotkeyListener>>,
 
     /// Speech-filtered audio chunks (accumulated during recording).
@@ -324,8 +324,15 @@ impl FuroPipeline {
 
     /// Load VAD, spawn sidecar servers, create HTTP clients. Call from a background thread.
     pub fn load_models(self: &Arc<Self>) {
+        log::info!("[pipeline] load_models() starting — OS={} ARCH={}", std::env::consts::OS, std::env::consts::ARCH);
+        if let Ok(exe) = std::env::current_exe() {
+            log::info!("[pipeline] exe path: {}", exe.display());
+        }
+        log::info!("[pipeline] models_dir: {}", self.models_dir.display());
+
         // Load VAD
-        self.emit_status("loading", "Loading VAD model…");
+        self.emit_status("loading", "Downloading VAD model…");
+        log::info!("[pipeline] step 1/5: VAD model download/check");
         match VoiceActivityDetector::ensure_model_downloaded(&self.models_dir) {
             Ok(vad_path) => {
                 let threshold = self
@@ -352,6 +359,7 @@ impl FuroPipeline {
         }
 
         // Download Whisper model if missing
+        log::info!("[pipeline] step 2/5: Whisper model download/check");
         self.emit_status("loading", "Checking Whisper model…");
         let pipeline_whisper = Arc::clone(self);
         let whisper_model_path = match Transcriber::ensure_model_downloaded(
@@ -369,6 +377,7 @@ impl FuroPipeline {
         };
 
         // Spawn whisper-server sidecar
+        log::info!("[pipeline] step 3/5: spawning whisper-server sidecar");
         self.emit_status("loading", "Starting whisper server…");
         let (sidecar_exited, stderr_capture) = {
             let mut sidecar = self.sidecar.lock();
@@ -384,18 +393,30 @@ impl FuroPipeline {
         };
 
         // Wait for whisper-server to become healthy
-        if let Err(e) = SidecarManager::wait_for_ready(
-            config::WHISPER_SERVER_URL,
-            "whisper-server",
-            &sidecar_exited,
-            &stderr_capture,
-        ) {
-            log::error!("{}", e);
-            self.emit_error(&e);
-            return;
+        log::info!("[pipeline] step 4/5: waiting for whisper-server health check");
+        self.emit_status("loading", "Waiting for whisper server to start…");
+        {
+            let pipeline_ref = Arc::clone(self);
+            let progress_cb = move |msg: &str| {
+                pipeline_ref.emit_status("loading", msg);
+            };
+            if let Err(e) = SidecarManager::wait_for_ready(
+                config::WHISPER_SERVER_URL,
+                "whisper-server",
+                &sidecar_exited,
+                &stderr_capture,
+                Some(&progress_cb),
+            ) {
+                log::error!("{}", e);
+                // Surface crash details in both the status bar AND error event
+                self.emit_status("loading", &format!("Server failed: {}", e.chars().take(120).collect::<String>()));
+                self.emit_error(&e);
+                return;
+            }
         }
 
         // Create HTTP transcriber client
+        log::info!("[pipeline] step 5/5: creating HTTP transcriber + warmup");
         *self.transcriber.lock() = Some(Transcriber::new());
         log::info!("Whisper HTTP transcriber ready.");
 
@@ -645,32 +666,33 @@ impl FuroPipeline {
     }
 
     fn process_audio(self: &Arc<Self>) {
-        // Drain the speech buffer
-        let speech_chunks: Vec<Vec<i16>> = {
+        let t0 = std::time::Instant::now();
+
+        // Drain the speech buffer directly into a flat contiguous buffer.
+        // Avoids the intermediate Vec<Vec<i16>> allocation.
+        let audio_i16: Vec<i16> = {
             let mut buf = self.speech_buffer.lock();
-            let chunks: Vec<Vec<i16>> = buf.drain(..).collect();
-            chunks
+            let total: usize = buf.iter().map(|c| c.len()).sum();
+            if total == 0 {
+                buf.clear();
+                log::info!("VAD: no speech detected.");
+                self.emit_transcription("");
+                self.emit_status("idle", "");
+                return;
+            }
+            let mut flat = Vec::with_capacity(total);
+            for chunk in buf.drain(..) {
+                flat.extend_from_slice(&chunk);
+            }
+            flat
         };
 
-        if speech_chunks.is_empty() {
-            log::info!("VAD: no speech detected.");
-            self.emit_transcription("");
-            self.emit_status("idle", "");
-            return;
-        }
-
-        // Concatenate all speech chunks
-        let total_samples: usize = speech_chunks.iter().map(|c| c.len()).sum();
-        let mut audio_i16 = Vec::with_capacity(total_samples);
-        for chunk in &speech_chunks {
-            audio_i16.extend_from_slice(chunk);
-        }
-
         let speech_s = audio_i16.len() as f64 / config::AUDIO_RATE as f64;
-        log::info!("Streaming VAD: {:.1}s of speech buffered.", speech_s);
+        log::info!("[perf] buffer flatten: {:.1}ms, {:.1}s speech", t0.elapsed().as_secs_f64() * 1000.0, speech_s);
 
         // Transcribe
         let language = self.settings.get("language");
+        let t_pre = t0.elapsed();
         let text = {
             let mut transcriber = self.transcriber.lock();
             if let Some(ref mut t) = *transcriber {
@@ -682,9 +704,17 @@ impl FuroPipeline {
                 return;
             }
         };
+        let t_transcribe = t0.elapsed();
 
         // Post-process through Rust regex rules (no LLM)
         let text = processor::process(&text);
+        let t_post = t0.elapsed();
+        log::info!("[perf] pipeline: flatten {:.1}ms + transcribe {:.1}ms + postproc {:.1}ms = {:.1}ms total",
+            t_pre.as_secs_f64() * 1000.0,
+            (t_transcribe - t_pre).as_secs_f64() * 1000.0,
+            (t_post - t_transcribe).as_secs_f64() * 1000.0,
+            t_post.as_secs_f64() * 1000.0,
+        );
 
         if !text.is_empty() {
             self.emit_transcription(&text);

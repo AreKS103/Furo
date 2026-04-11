@@ -233,6 +233,21 @@ fn diagnose_macos(pipeline: tauri::State<'_, Arc<FuroPipeline>>) -> String {
     let vad_model = models_dir.join(crate::config::VAD_MODEL_FILENAME);
     lines.push(format!("VAD_MODEL_EXISTS: {}", vad_model.exists()));
 
+    // Sidecar crash state (from last spawn attempt)
+    {
+        let sidecar = pipeline.sidecar.lock();
+        let exited = sidecar.sidecar_exited.load(std::sync::atomic::Ordering::SeqCst);
+        lines.push(format!("SIDECAR_EXITED: {}", exited));
+        if exited {
+            let stderr = sidecar.stderr_capture.lock();
+            let last_lines: Vec<&str> = stderr.iter().rev().take(10).map(|s| s.as_str()).collect();
+            let last_lines: Vec<&str> = last_lines.into_iter().rev().collect();
+            if !last_lines.is_empty() {
+                lines.push(format!("SIDECAR_STDERR_LAST_LINES:\n{}", last_lines.join("\n")));
+            }
+        }
+    }
+
     // Audio devices
     {
         use cpal::traits::{DeviceTrait, HostTrait};
@@ -257,6 +272,105 @@ fn diagnose_macos(pipeline: tauri::State<'_, Arc<FuroPipeline>>) -> String {
 
     let result = lines.join("\n");
     log::info!("diagnose_macos:\n{}", result);
+    result
+}
+
+/// Diagnostics for the updater — checks whether the app location is writable,
+/// temp dir is on the same volume, and other common macOS update blockers.
+#[tauri::command]
+fn diagnose_updater() -> String {
+    let mut lines: Vec<String> = Vec::new();
+
+    lines.push(format!("OS: {}", std::env::consts::OS));
+    lines.push(format!("ARCH: {}", std::env::consts::ARCH));
+
+    // Executable path
+    if let Ok(exe) = std::env::current_exe() {
+        lines.push(format!("EXE: {}", exe.display()));
+
+        #[cfg(target_os = "macos")]
+        {
+            let path_str = exe.display().to_string();
+
+            // Check App Translocation
+            if path_str.contains("AppTranslocation") || path_str.starts_with("/private/var/folders/") {
+                lines.push("APP_TRANSLOCATION: true ⚠️ Updates CANNOT work from a translocated path".to_string());
+            } else {
+                lines.push("APP_TRANSLOCATION: false".to_string());
+            }
+
+            // Resolve the .app bundle directory
+            // EXE is typically: /Applications/Furo.app/Contents/MacOS/Furo
+            if let Some(macos_dir) = exe.parent() {
+                if let Some(contents_dir) = macos_dir.parent() {
+                    if let Some(app_dir) = contents_dir.parent() {
+                        let app_path = app_dir.to_path_buf();
+                        lines.push(format!("APP_BUNDLE: {}", app_path.display()));
+
+                        // Check if the .app bundle's parent directory is writable
+                        if let Some(parent) = app_path.parent() {
+                            let parent_writable = {
+                                let test_file = parent.join(".furo_update_test");
+                                match std::fs::File::create(&test_file) {
+                                    Ok(_) => {
+                                        let _ = std::fs::remove_file(&test_file);
+                                        true
+                                    }
+                                    Err(_) => false,
+                                }
+                            };
+                            lines.push(format!("APP_PARENT_DIR: {}", parent.display()));
+                            lines.push(format!("APP_PARENT_WRITABLE: {}", parent_writable));
+                            if !parent_writable {
+                                lines.push("⚠️ Cannot write to app directory — updater will fail".to_string());
+                            }
+                        }
+
+                        // Check if app itself is writable (the .app bundle)
+                        if let Ok(meta) = std::fs::metadata(&app_path) {
+                            use std::os::unix::fs::PermissionsExt;
+                            let mode = meta.permissions().mode();
+                            lines.push(format!("APP_BUNDLE_PERMISSIONS: {:o}", mode));
+                        }
+                    }
+                }
+            }
+
+            // Check temp dir — the updater downloads to temp then moves to app location.
+            // If they're on different filesystems, rename() fails.
+            let temp_dir = std::env::temp_dir();
+            lines.push(format!("TEMP_DIR: {}", temp_dir.display()));
+
+            // Check if the app and temp are on the same volume
+            // (simple heuristic: compare the first path component after /)
+            let app_vol = path_str.split('/').nth(1).unwrap_or("");
+            let temp_vol = temp_dir.display().to_string();
+            let temp_vol_part = temp_vol.split('/').nth(1).unwrap_or("");
+            let same_volume = app_vol == temp_vol_part || app_vol == "Applications";
+            lines.push(format!("SAME_VOLUME: {} (app={}, temp={})", same_volume, app_vol, temp_vol_part));
+        }
+
+        #[cfg(target_os = "windows")]
+        {
+            // Check if exe dir is writable
+            if let Some(exe_dir) = exe.parent() {
+                let writable = {
+                    let test_file = exe_dir.join(".furo_update_test");
+                    match std::fs::File::create(&test_file) {
+                        Ok(_) => {
+                            let _ = std::fs::remove_file(&test_file);
+                            true
+                        }
+                        Err(_) => false,
+                    }
+                };
+                lines.push(format!("EXE_DIR_WRITABLE: {}", writable));
+            }
+        }
+    }
+
+    let result = lines.join("\n");
+    log::info!("diagnose_updater:\n{}", result);
     result
 }
 
@@ -328,6 +442,7 @@ pub fn run() {
             list_microphones,
             test_pipeline,
             diagnose_macos,
+            diagnose_updater,
             get_autostart,
             set_autostart,
             preview_sound,

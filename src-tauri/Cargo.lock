@@ -1183,7 +1183,7 @@ dependencies = [
 
 [[package]]
 name = "furo"
-version = "0.2.26"
+version = "0.2.27"
 dependencies = [
  "arboard",
  "cpal",
