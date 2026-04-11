@@ -137,26 +137,32 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Build Tauri (macOS DMG — Apple Silicon)
+      - name: Build Tauri (macOS DMG + Updater — Apple Silicon)
         env:
           # Ensure ort crate can download ONNX Runtime without GitHub rate limits
           GITHUB_TOKEN: ${{ github.token }}
-        run: npx tauri build --target aarch64-apple-darwin --bundles dmg
+        run: npx tauri build --target aarch64-apple-darwin --bundles dmg,updater
 
       - name: List artifacts
         if: always()
         run: |
-          ls -la src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/ || true
-          ls -la src-tauri/target/aarch64-apple-darwin/release/bundle/macos/ || true
+          echo "=== All bundle output ==="
+          find src-tauri/target/aarch64-apple-darwin/release/bundle/ -type f 2>/dev/null || true
+
+      - name: Collect macOS artifacts
+        run: |
+          mkdir -p collected-macos
+          cp src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg collected-macos/ 2>/dev/null || true
+          cp src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz collected-macos/ 2>/dev/null || true
+          cp src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig collected-macos/ 2>/dev/null || true
+          echo "=== Collected macOS artifacts ==="
+          ls -la collected-macos/
 
       - name: Upload macOS artifacts
         uses: actions/upload-artifact@v4
         with:
           name: macos-artifacts
-          path: |
-            src-tauri/target/aarch64-apple-darwin/release/bundle/dmg/*.dmg
-            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz
-            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/*.app.tar.gz.sig
+          path: collected-macos/*
           if-no-files-found: error
 
   # ════════════════════════════════════════════════════════════════════════════
@@ -198,17 +204,32 @@ jobs:
           PUB_DATE=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
           REPO="AreKS103/Furo"
 
+          echo "=== Available artifacts ==="
+          find artifacts/ -type f | sort
+
           # Read Windows NSIS signature
           WIN_SIG_FILE=$(find artifacts/windows -name "*.nsis.zip.sig" | head -1)
-          WIN_SIG=$(cat "$WIN_SIG_FILE" | tr -d '\n\r')
           WIN_ZIP=$(find artifacts/windows -name "*.nsis.zip" ! -name "*.sig" | head -1)
-          WIN_ZIP_NAME=$(basename "$WIN_ZIP")
-          WIN_URL="https://github.com/${REPO}/releases/download/${TAG}/${WIN_ZIP_NAME}"
 
           # Read macOS updater signature
           MAC_SIG_FILE=$(find artifacts/macos -name "*.app.tar.gz.sig" | head -1)
-          MAC_SIG=$(cat "$MAC_SIG_FILE" | tr -d '\n\r')
           MAC_TAR=$(find artifacts/macos -name "*.app.tar.gz" ! -name "*.sig" | head -1)
+
+          # Validate all required files were found
+          for f in "$WIN_SIG_FILE" "$WIN_ZIP" "$MAC_SIG_FILE" "$MAC_TAR"; do
+            if [[ -z "$f" || ! -f "$f" ]]; then
+              echo "::error::Required artifact not found: '$f'"
+              echo "Artifacts present:"
+              find artifacts/ -type f | sort
+              exit 1
+            fi
+          done
+
+          WIN_SIG=$(tr -d '\n\r' < "$WIN_SIG_FILE")
+          WIN_ZIP_NAME=$(basename "$WIN_ZIP")
+          WIN_URL="https://github.com/${REPO}/releases/download/${TAG}/${WIN_ZIP_NAME}"
+
+          MAC_SIG=$(tr -d '\n\r' < "$MAC_SIG_FILE")
           MAC_TAR_NAME=$(basename "$MAC_TAR")
           MAC_URL="https://github.com/${REPO}/releases/download/${TAG}/${MAC_TAR_NAME}"
 
@@ -247,10 +268,6 @@ jobs:
           draft: false
           prerelease: false
           files: |
-            artifacts/windows/*.exe
-            artifacts/windows/*.nsis.zip
-            artifacts/windows/*.nsis.zip.sig
-            artifacts/macos/*.dmg
-            artifacts/macos/*.app.tar.gz
-            artifacts/macos/*.app.tar.gz.sig
+            artifacts/windows/*
+            artifacts/macos/*
             artifacts/latest.json
