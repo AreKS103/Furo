@@ -418,6 +418,12 @@ function SettingsPage({
   const [language, setLanguage] = useState("en");
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [soundVolume, setSoundVolume] = useState(5); // 0–100 integer, stored as 0.0–1.0
+  const [appVersion, setAppVersion] = useState("");
+
+  // Read the version from the compiled binary — automatically correct for every release.
+  useEffect(() => {
+    getVersion().then(setAppVersion).catch(() => setAppVersion("?"));
+  }, []);
 
   useEffect(() => {
     if (settings.microphone !== undefined) setSelectedMic(settings.microphone);
@@ -784,7 +790,6 @@ export function Dashboard({ theme, setTheme }: DashboardProps) {
   const { entries, saveEntry, clearAll, cumulativeStats } = useHistory();
   const [activeTab, setActiveTab] = useState<"home" | "settings">("home");
   const lastSavedRef = useRef("");
-  const [appVersion, setAppVersion] = useState("");
   const [updateAvailable, setUpdateAvailable] = useState(false);
   const [updateStatus, setUpdateStatus] = useState<"idle" | "downloading" | "ready">("idle");
   const [updateCheckMsg, setUpdateCheckMsg] = useState("");
@@ -797,11 +802,6 @@ export function Dashboard({ theme, setTheme }: DashboardProps) {
   useEffect(() => {
     if (settings.theme) setTheme(settings.theme as "dark" | "light");
   }, [settings.theme, setTheme]);
-
-  // Read the version from the compiled binary — automatically correct for every release.
-  useEffect(() => {
-    getVersion().then(setAppVersion).catch(() => setAppVersion("?"));
-  }, []);
 
   /* Check for updates on mount + when triggered from tray */
   const checkForUpdate = useCallback(async (manual = false) => {
