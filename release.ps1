@@ -25,23 +25,19 @@ if (-not $CI) {
     Write-Host "  (No version bump, no git push, no GitHub release)" -ForegroundColor DarkGray
     Write-Host ""
 
-    # Signing key is required for updater artifact generation
-    if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
-        Write-Host "  Signing key needed (tauri.conf.json has createUpdaterArtifacts)." -ForegroundColor Yellow
-        Write-Host "  Paste from Bitwarden, or press Enter to skip (build may fail)." -ForegroundColor DarkGray
-        Write-Host ""
-        $inputKey = Read-Host "  Private key"
-        if ($inputKey) { $env:TAURI_SIGNING_PRIVATE_KEY = $inputKey }
-        $inputPwd = Read-Host "  Key password (blank if none)"
-        if ($inputPwd) { $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $inputPwd }
-    }
-
     # Build the app (Tauri + Vite + Rust)
+    # Disable createUpdaterArtifacts so no signing key or password is required for local testing.
     Write-Host ""
     Write-Host "  Building... (this takes about 10 minutes)" -ForegroundColor Yellow
     Write-Host ""
 
-    npx tauri build --bundles nsis
+    # Write config to a temp file to avoid PowerShell quote-stripping issues with --config JSON inline
+    $tmpConfig = [System.IO.Path]::GetTempFileName() + ".json"
+    '{"bundle":{"createUpdaterArtifacts":false}}' | Set-Content $tmpConfig -Encoding utf8
+
+    npx tauri build --bundles nsis --config $tmpConfig
+
+    Remove-Item $tmpConfig -ErrorAction SilentlyContinue
 
     if ($LASTEXITCODE -ne 0) {
         Write-Host ""

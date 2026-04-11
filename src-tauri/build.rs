@@ -27,10 +27,25 @@ fn main() {
         let dst_binaries = target_profile_dir.join("binaries");
         std::fs::create_dir_all(&dst_binaries).unwrap();
 
+        let is_windows = target.contains("windows");
+
         for entry in std::fs::read_dir(&src_binaries).unwrap() {
             let entry = entry.unwrap();
             let src = entry.path();
             if !src.is_file() {
+                continue;
+            }
+
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+
+            // Skip files that don't belong to the current target OS:
+            //   - .dll / .exe are Windows-only
+            //   - extensionless binaries are macOS/Linux-only
+            if !is_windows && (name_str.ends_with(".dll") || name_str.ends_with(".exe")) {
+                continue;
+            }
+            if is_windows && !name_str.contains('.') {
                 continue;
             }
 
@@ -46,9 +61,6 @@ fn main() {
                 println!("cargo::warning=copying sidecar: {}", entry.file_name().to_string_lossy());
                 std::fs::copy(&src, &dst).unwrap();
             }
-
-            let name = entry.file_name();
-            let name_str = name.to_string_lossy();
 
             if let Some(stem) = name_str.strip_suffix(".exe") {
                 if let Some(base) = stem.strip_suffix(&triple_suffix) {
@@ -96,10 +108,10 @@ fn main() {
                         std::fs::copy(&src, &dst_root_short).unwrap();
                     }
                 }
-            } else if name_str.ends_with(".dll") && target.contains("windows") {
+            } else if name_str.ends_with(".dll") {
                 // --- copy DLLs to TARGET ROOT so whisper-server.exe can find them at runtime ---
                 // In dev mode, the sidecar exe runs from <target_profile>/ so DLLs must be there.
-                // Only on Windows — DLLs are irrelevant on macOS/Linux.
+                // (Non-Windows files are already skipped at the top of the loop.)
                 let dst_root_dll = target_profile_dir.join(entry.file_name());
                 let needs_dll = if dst_root_dll.exists() {
                     src.metadata().unwrap().modified().unwrap()

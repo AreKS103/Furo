@@ -120,13 +120,23 @@ jobs:
             -DCMAKE_OSX_ARCHITECTURES=x86_64 -DGGML_NATIVE=OFF
           cmake --build build-x86_64 --config Release -j$(sysctl -n hw.logicalcpu)
 
-          # Tauri universal builds for each arch separately, so it needs both arch-specific sidecars
+          # Tauri universal builds: compile step needs per-arch sidecars,
+          # bundle step needs a universal-apple-darwin lipo binary.
           cp build-arm64/bin/whisper-server "$GITHUB_WORKSPACE/src-tauri/binaries/whisper-server-aarch64-apple-darwin"
           cp build-x86_64/bin/whisper-server "$GITHUB_WORKSPACE/src-tauri/binaries/whisper-server-x86_64-apple-darwin"
+
+          # Create the universal (fat) binary for the bundle step
+          lipo -create \
+            build-arm64/bin/whisper-server \
+            build-x86_64/bin/whisper-server \
+            -output "$GITHUB_WORKSPACE/src-tauri/binaries/whisper-server-universal-apple-darwin"
+
           chmod +x "$GITHUB_WORKSPACE/src-tauri/binaries/whisper-server-aarch64-apple-darwin"
           chmod +x "$GITHUB_WORKSPACE/src-tauri/binaries/whisper-server-x86_64-apple-darwin"
+          chmod +x "$GITHUB_WORKSPACE/src-tauri/binaries/whisper-server-universal-apple-darwin"
           file "$GITHUB_WORKSPACE/src-tauri/binaries/whisper-server-aarch64-apple-darwin"
           file "$GITHUB_WORKSPACE/src-tauri/binaries/whisper-server-x86_64-apple-darwin"
+          file "$GITHUB_WORKSPACE/src-tauri/binaries/whisper-server-universal-apple-darwin"
           ls -la "$GITHUB_WORKSPACE/src-tauri/binaries/"
 
       - name: Patch tauri.conf.json for macOS

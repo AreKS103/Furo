@@ -11,6 +11,7 @@ mod platform;
 
 #[cfg(target_os = "macos")]
 #[path = "typer_mac.rs"]
+#[allow(unexpected_cfgs)] // objc 0.2 macros reference `feature = "cargo-clippy"`
 mod platform;
 
 pub use platform::*;
