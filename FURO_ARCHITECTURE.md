@@ -1,4 +1,4 @@
-﻿# Project Furo â€” Architecture & Logic Reference
+# Project Furo — Architecture & Logic Reference
 
 > **For AI assistants**: This document replaces all prior architecture docs. The Python/FastAPI/WebSocket architecture described in old versions no longer exists. The backend is 100% native Rust.  
 > **Date**: 2026-04-11 | **Version**: 0.2.10 | **Repo**: https://github.com/AreKS103/Furo  
@@ -22,7 +22,7 @@ All npm commands run from the workspace root (`./Furo`), not from `src-tauri`.
 | `npm run dev` | Vite dev server only |
 | `npm run tauri dev` | Full Tauri dev (Vite + Rust hot-reload) |
 | `npm run tauri build` | Local Windows release build |
-| `npm run release:ci` | Bump patch, commit, tag, push â†’ triggers GitHub Actions CI |
+| `npm run release:ci` | Bump patch, commit, tag, push → triggers GitHub Actions CI |
 | `npm run release:ci:minor` | Same, minor bump |
 | `npm run release:ci:major` | Same, major bump |
 
@@ -34,12 +34,12 @@ No WebSocket. No REST API. No Python. All frontendâ†”backend communication 
 
 ```
 Tauri v2 Shell
-  â”œâ”€â”€ Main Window (React/TS â€” Settings + History)
+  â”œâ”€â”€ Main Window (React/TS — Settings + History)
   â”œâ”€â”€ Floating Widget (frameless, transparent pill, always-on-top)
   â””â”€â”€ System Tray (3 recent transcriptions + quit)
         â†• Tauri IPC
 Native Rust Pipeline
-  Hotkey â†’ Audio â†’ VAD â†’ DSP â†’ HTTP POST â†’ Post-process â†’ Typer
+  Hotkey → Audio → VAD → DSP → HTTP POST → Post-process → Typer
         â†• HTTP (localhost:8080)
 whisper-server sidecar (whisper.cpp, /v1/audio/transcriptions)
 ```
@@ -62,7 +62,7 @@ whisper-server sidecar (whisper.cpp, /v1/audio/transcriptions)
 | `typer.rs` | Platform wrapper + CapturedTarget struct |
 | `typer_win.rs` | Windows: arboard clipboard + SendInput Ctrl+V |
 | `typer_mac.rs` | macOS: NSWorkspace focus track + CGEvent Cmd+V |
-| `dsp.rs` | Highpass 300 Hz â†’ high-shelf 2500 Hz +5 dB â†’ compressor -20 dB 3:1 |
+| `dsp.rs` | Highpass 300 Hz → high-shelf 2500 Hz +5 dB → compressor -20 dB 3:1 |
 | `processor.rs` | Voiced punctuation dict, "scratch that" commands, filler/stutter regex |
 | `config.rs` | All tunables (ports, rates, thresholds, URLs, filenames) |
 | `settings.rs` | %APPDATA%/Furo/settings.json, thread-safe read/write via parking_lot |
@@ -84,35 +84,35 @@ whisper-server sidecar (whisper.cpp, /v1/audio/transcriptions)
 `FuroPipeline` owns all mutable state behind `parking_lot::Mutex`.
 
 ### Startup (background thread, runs once at app launch)
-1. Load Silero VAD ONNX model (CPU) â†’ `vad` field
-2. Ensure Whisper GGML model exists (download ~900 MB if missing) â†’ path
-3. Spawn `whisper-server` sidecar â†’ poll `/health` until 200 OK (up to 120s)
-4. Create Transcriber HTTP client â†’ warmup call (0.1s silence, hides CUDA JIT latency ~90s)
-5. Emit `furo://status ready` â†’ start hotkey listener
+1. Load Silero VAD ONNX model (CPU) → `vad` field
+2. Ensure Whisper GGML model exists (download ~900 MB if missing) → path
+3. Spawn `whisper-server` sidecar → poll `/health` until 200 OK (up to 120s)
+4. Create Transcriber HTTP client → warmup call (0.1s silence, hides CUDA JIT latency ~90s)
+5. Emit `furo://status ready` → start hotkey listener
 
 ### Dictation lifecycle
-1. **Hotkey press** â†’ `on_hold_press()` or `on_handsfree_press()`
-2. Capture target window (`typer::capture_target()`) â†’ stored in `captured_target`
+1. **Hotkey press** → `on_hold_press()` or `on_handsfree_press()`
+2. Capture target window (`typer::capture_target()`) → stored in `captured_target`
 3. Reset VAD state; clear speech buffer; play activation sound (cpal output, separate thread)
 4. Start audio recording (cpal input stream)
-5. Per 512-sample chunk: VAD classifies â†’ speech chunks push to `speech_buffer`; RMS â†’ `furo://volume`
-6. **Hotkey release** â†’ stop recording â†’ spawn `furo-process` thread
-7. Drain speech buffer â†’ concat â†’ DSP condition â†’ WAV encode â†’ HTTP POST to whisper-server
-8. Response text â†’ `processor.rs` â†’ emit `furo://transcription`
-9. Restore focus â†’ `typer::type_text()` injects text into captured window
+5. Per 512-sample chunk: VAD classifies → speech chunks push to `speech_buffer`; RMS → `furo://volume`
+6. **Hotkey release** → stop recording → spawn `furo-process` thread
+7. Drain speech buffer → concat → DSP condition → WAV encode → HTTP POST to whisper-server
+8. Response text → `processor.rs` → emit `furo://transcription`
+9. Restore focus → `typer::type_text()` injects text into captured window
 10. Emit `furo://status ready`
 
 ### Recording modes
-- `Hold` â€” active while key held, stops on release
-- `Handsfree` â€” toggles on second press
-- `None` â€” idle
+- `Hold` — active while key held, stops on release
+- `Handsfree` — toggles on second press
+- `None` — idle
 
 ---
 
 ## 6. Hotkey System
 
 ### Architecture
-Platform hook â†’ `crossbeam_channel` â†’ **worker thread** processes. Hook thread ONLY enqueues. This prevents Windows `LowLevelHooksTimeout` (~200ms) from killing the hook.
+Platform hook → `crossbeam_channel` → **worker thread** processes. Hook thread ONLY enqueues. This prevents Windows `LowLevelHooksTimeout` (~200ms) from killing the hook.
 
 ### Combo format
 `"ctrl+win+space"`, `"alt+f5"`, `"mouse4"`, `"ctrl+mouse5"`, `"vk166"` (raw VK code for macro keys)
@@ -121,13 +121,13 @@ Platform hook â†’ `crossbeam_channel` â†’ **worker thread** processes.
 Split on `+`; last token = trigger, rest = required modifiers. Trigger: named key / single char / `vk<int>` / `mouse3/4/5`.
 
 ### Worker thread
-- Tracks `active_modifiers: HashSet<String>` â€” worker is sole mutator (no races)
-- On press: if trigger matches AND required modifiers âŠ† active â†’ fire callback
-- On release: if Hold trigger released â†’ `on_hold_release`; if required modifier released during Hold â†’ also release
+- Tracks `active_modifiers: HashSet<String>` — worker is sole mutator (no races)
+- On press: if trigger matches AND required modifiers âŠ† active → fire callback
+- On release: if Hold trigger released → `on_hold_release`; if required modifier released during Hold → also release
 - Injected keystrokes (from Furo's own paste) filtered via `injected=true` flag
 
 ### Windows (`hotkey_win.rs`)
-`SetWindowsHookExW(WH_KEYBOARD_LL)` + raw mouse hook. `WIN_IS_COMBO_MODIFIER` static suppresses Winâ†’Start and Win+Space during hotkey use. `REBIND_MODE_ACTIVE` static puts worker into capture mode for rebinding.
+`SetWindowsHookExW(WH_KEYBOARD_LL)` + raw mouse hook. `WIN_IS_COMBO_MODIFIER` static suppresses Win→Start and Win+Space during hotkey use. `REBIND_MODE_ACTIVE` static puts worker into capture mode for rebinding.
 
 ### macOS (`hotkey_mac.rs`)
 `CGEventTapCreate` at `kCGSessionEventTap` level. Dedicated thread + CFRunLoop. Requires Accessibility permission.
@@ -140,10 +140,10 @@ Split on `+`; last token = trigger, rest = required modifiers. Trigger: named ke
 `capture_target()` saves the foreground window/process **at hotkey press time**, before recording starts. Text injects to the right place even if user clicks elsewhere during the 2-5 second transcription wait.
 
 ### Windows (`typer_win.rs`)
-Target = HWND. Injection: `AttachThreadInput` to foreground + target threads â†’ `SetForegroundWindow` â†’ arboard clipboard set â†’ `SendInput` 4-event Ctrl+V (VK_CONTROLâ†“ VK_Vâ†“ VK_Vâ†‘ VK_CONTROLâ†‘) â†’ 50ms settle delay.
+Target = HWND. Injection: `AttachThreadInput` to foreground + target threads → `SetForegroundWindow` → arboard clipboard set → `SendInput` 4-event Ctrl+V (VK_CONTROL↓ VK_V↓ VK_V← VK_CONTROL←) → 50ms settle delay.
 
 ### macOS (`typer_mac.rs`)
-Target = pid_t. Injection: `NSRunningApplication::activateIgnoringOtherApps` â†’ arboard clipboard set â†’ CGEvent Cmd+V. `BOOL` from `objc::runtime` is `bool` on modern macOS â€” never compare with `!= 0`.
+Target = pid_t. Injection: `NSRunningApplication::activateIgnoringOtherApps` → arboard clipboard set → CGEvent Cmd+V. `BOOL` from `objc::runtime` is `bool` on modern macOS — never compare with `!= 0`.
 
 ### Why clipboard + paste (not per-char SendInput)
 Works in every app: Electron, browser sandboxes, UWP, terminal emulators. Per-character `SendInput`/`WM_CHAR` fails in IME-aware and sandboxed apps.
@@ -156,7 +156,7 @@ Spawns `whisper-server` (whisper.cpp compiled with `-DWHISPER_BUILD_SERVER=ON`) 
 
 Args: `--model <path> --host 127.0.0.1 --port 8080 --flash-attn --inference-path /v1/audio/transcriptions`
 
-**Critical**: stdout/stderr receiver MUST be drained in a background thread via `blocking_recv()`. Dropping it fills the OS pipe buffer (~64 KB) â†’ `whisper-server` blocks on stdout write â†’ all HTTP responses deadlock.
+**Critical**: stdout/stderr receiver MUST be drained in a background thread via `blocking_recv()`. Dropping it fills the OS pipe buffer (~64 KB) → `whisper-server` blocks on stdout write → all HTTP responses deadlock.
 
 Binary location: production = `<exe_dir>/whisper-server.exe` (NSIS strips `binaries/` prefix). Dev = `<exe_dir>/binaries/whisper-server.exe` (build.rs copies it).
 
@@ -170,17 +170,17 @@ Windows DLLs (`ggml.dll`, `ggml-base.dll`, `ggml-cpu.dll`, `whisper.dll`, `libom
 
 Silero VAD v6, ONNX (~2 MB), CPU-only (GPU reserved for Whisper). Inputs: `input[1,576]` (512 samples + 64-sample context prepend), `state[2,1,128]` (GRU hidden), `sr[1]`. Threshold: 0.45 (configurable).
 
-Stateful â€” `reset()` between recordings. Runs **streaming during recording** so Whisper only ever sees speech-only audio. Pre-roll: last 3 silent chunks prepended on speech onset (captures leading consonants). Hangover: 15 chunks (480ms) after speech drops below threshold.
+Stateful — `reset()` between recordings. Runs **streaming during recording** so Whisper only ever sees speech-only audio. Pre-roll: last 3 silent chunks prepended on speech onset (captures leading consonants). Hangover: 15 chunks (480ms) after speech drops below threshold.
 
 ---
 
 ## 10. DSP + Post-processing
 
-DSP (`dsp.rs`, runs before Whisper): Highpass 300 Hz â†’ high-shelf 2500 Hz +5 dB â†’ compressor -20 dB 3:1.
+DSP (`dsp.rs`, runs before Whisper): Highpass 300 Hz → high-shelf 2500 Hz +5 dB → compressor -20 dB 3:1.
 
 Post-processing (`processor.rs`, runs after Whisper, deterministic, no LLM):
-1. Symbol dict: voiced punctuation â†’ symbols ("period" â†’ ".", "open paren" â†’ "(", etc.)
-2. Voice commands: "scratch that" â†’ delete last word, "I mean X" â†’ replace last word
+1. Symbol dict: voiced punctuation → symbols ("period" → ".", "open paren" → "(", etc.)
+2. Voice commands: "scratch that" → delete last word, "I mean X" → replace last word
 3. Filler strip: uh, um, er, ah, hm, hmm, like
 4. Stutter dedup: repeated-word pairs
 5. Space collapse
@@ -201,10 +201,10 @@ Events from Rust to frontend (frontend listens via `useFuro.ts`):
 | `furo://rebind-capture` | combo string | Hotkey rebind UI |
 | `furo://model-download-progress` | `{progress, message}` | Download 0â€“100 |
 
-Status states: `loading` â†’ `ready` â†’ `recording` â†’ `processing` â†’ `ready`
+Status states: `loading` → `ready` → `recording` → `processing` → `ready`
 
 ### FloatingWidget
-Frameless, transparent (Windows-only â€” `.transparent()` not available on macOS WebviewWindowBuilder), always-on-top, `skip_taskbar`, `focused(false)`. Position: bottom-center of cursor's monitor, polls every 500ms. 10-bar visualizer via RAF + lerp.
+Frameless, transparent (Windows-only — `.transparent()` not available on macOS WebviewWindowBuilder), always-on-top, `skip_taskbar`, `focused(false)`. Position: bottom-center of cursor's monitor, polls every 500ms. 10-bar visualizer via RAF + lerp.
 
 ### Dashboard
 Settings tab: mic dropdown (filtered by `MIC_EXCLUDE_KEYWORDS`), hotkey rebind (keyboard + mouse + macro vk codes). History tab: Notion-style cards, copy per entry, clear all. Status bar: color-coded badge.
@@ -233,9 +233,9 @@ Changing hotkey keys restarts the hotkey listener.
 ## 13. System Tray + Windowing
 
 - 3 most-recent transcriptions as quick-copy menu items
-- `open` â†’ show main window; `quit` â†’ pipeline shutdown + sidecar kill + exit
-- Close button â†’ `prevent_close()` + `window.hide()` (close-to-tray, not quit)
-- Frontend emits Tauri event `update-tray` after each transcription â†’ Rust updates `RecentTexts` â†’ rebuilds tray menu
+- `open` → show main window; `quit` → pipeline shutdown + sidecar kill + exit
+- Close button → `prevent_close()` + `window.hide()` (close-to-tray, not quit)
+- Frontend emits Tauri event `update-tray` after each transcription → Rust updates `RecentTexts` → rebuilds tray menu
 
 ---
 
@@ -243,13 +243,13 @@ Changing hotkey keys restarts the hotkey listener.
 
 File: `.github/workflows/release.yml`. Trigger: push of `v*` tag via `npm run release:ci` (run from `./Furo`).
 
-**build-windows** (`windows-latest`): `tauri build --bundles nsis` â†’ NSIS `.exe`, `.nsis.zip`, `.nsis.zip.sig`
+**build-windows** (`windows-latest`): `tauri build --bundles nsis` → NSIS `.exe`, `.nsis.zip`, `.nsis.zip.sig`
 
-**build-macos** (`macos-14` M1): clones whisper.cpp â†’ cmake (`-DWHISPER_BUILD_SERVER=ON`, no Metal) â†’ copies `whisper-server-aarch64-apple-darwin` to `src-tauri/binaries/` â†’ Python patches `tauri.conf.json` (clears DLL resources) â†’ `tauri build --target aarch64-apple-darwin --bundles dmg` â†’ `.dmg`, `.app.tar.gz`, `.app.tar.gz.sig`
+**build-macos** (`macos-14` M1): clones whisper.cpp → cmake (`-DWHISPER_BUILD_SERVER=ON`, no Metal) → copies `whisper-server-aarch64-apple-darwin` to `src-tauri/binaries/` → Python patches `tauri.conf.json` (clears DLL resources) → `tauri build --target aarch64-apple-darwin --bundles dmg` → `.dmg`, `.app.tar.gz`, `.app.tar.gz.sig`
 
 **publish** (`ubuntu-latest`): merges artifacts, generates `latest.json` (signed URLs for both platforms), creates GitHub Release.
 
-Secrets: `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (GitHub repo â†’ Settings â†’ Secrets).
+Secrets: `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` (GitHub repo → Settings → Secrets).
 
 Auto-updater endpoint: `https://github.com/AreKS103/Furo/releases/latest/download/latest.json`. Works for 0.2.8+.
 
@@ -268,7 +268,7 @@ Pre-install hook (`src-tauri/windows/hooks.nsh`) kills `whisper-server.exe` and 
 | Hotkey hook | `SetWindowsHookExW` + raw mouse | `CGEventTap` (Accessibility perm required) |
 | Text inject | `AttachThreadInput` + `SendInput` Ctrl+V | `activateIgnoringOtherApps` + CGEvent Cmd+V |
 | Target capture | HWND | pid_t |
-| Widget transparency | `.transparent(true).shadow(false)` | Not available â€” opaque background |
+| Widget transparency | `.transparent(true).shadow(false)` | Not available — opaque background |
 | Sidecar binary | `whisper-server.exe` + `.dll` files alongside | `whisper-server` (no extension, no DLLs) |
 | DLL resources | Listed in `tauri.conf.json` | Cleared by CI Python patch step |
 | Cargo target | `x86_64-pc-windows-msvc` | `aarch64-apple-darwin` (CI) or `x86_64-apple-darwin` (old Intel) |
@@ -286,7 +286,7 @@ Pre-install hook (`src-tauri/windows/hooks.nsh`) kills `whisper-server.exe` and 
 ## 17. Version Numbers
 
 - `package.json` + `tauri.conf.json`: always in sync, bumped by `release:ci` scripts
-- `src-tauri/Cargo.toml`: stays at `0.2.0` â€” Tauri reads version from `tauri.conf.json`, not Cargo
+- `src-tauri/Cargo.toml`: stays at `0.2.0` — Tauri reads version from `tauri.conf.json`, not Cargo
 - `.cargo/config.toml`: machine-local (redirects target dir out of OneDrive to `%LOCALAPPDATA%/furo-target`), gitignored; CI uses default target dir
 
 ---
@@ -305,12 +305,12 @@ Pre-install hook (`src-tauri/windows/hooks.nsh`) kills `whisper-server.exe` and 
 
 ## 19. Risk Areas / Gotchas
 
-- **Sidecar stdout drain (critical)**: Must drain `rx` via `blocking_recv()` in background thread. Dropping `_rx` fills OS pipe buffer â†’ whisper-server deadlocks â†’ all HTTP hang forever.
-- **`_recording_mode` TOCTOU**: Read bare before `_do_start` acquires lock â€” benign (missed press at worst, re-checked under lock).
+- **Sidecar stdout drain (critical)**: Must drain `rx` via `blocking_recv()` in background thread. Dropping `_rx` fills OS pipe buffer → whisper-server deadlocks → all HTTP hang forever.
+- **`_recording_mode` TOCTOU**: Read bare before `_do_start` acquires lock — benign (missed press at worst, re-checked under lock).
 - **Clipboard race**: ~50-100ms window between `set_text()` and `SendInput` where another app could clobber clipboard.
 - **Injected Ctrl+V re-trigger**: Filtered via `injected=true` flag on Windows; safe.
 - **`AttachThreadInput` leak**: If process crashes mid-attach, attachment persists until threads exit. Normal operation uses `finally`-style pattern.
-- **Model scan false positives**: Accepts any `.bin` â‰¥ 10 MB named `ggml-*` or `whisper-*`. Could pick non-Whisper model with matching name.
+- **Model scan false positives**: Accepts any `.bin` ≥ 10 MB named `ggml-*` or `whisper-*`. Could pick non-Whisper model with matching name.
 - **Filler regex**: Strips "like" everywhere (including legitimate uses). Stutter dedup strips "bye bye", "go go", etc.
 - **Settings write amplification**: Every `set()` serializes full JSON. Fine for rare changes.
-- **objc warnings**: `objc` v0.2.7 macro expansions emit many `unexpected_cfgs` â€” cosmetic only, not errors.
+- **objc warnings**: `objc` v0.2.7 macro expansions emit many `unexpected_cfgs` — cosmetic only, not errors.
