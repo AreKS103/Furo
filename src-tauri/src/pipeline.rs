@@ -370,19 +370,26 @@ impl FuroPipeline {
 
         // Spawn whisper-server sidecar
         self.emit_status("loading", "Starting whisper server…");
-        {
+        let (sidecar_exited, stderr_capture) = {
             let mut sidecar = self.sidecar.lock();
             if let Err(e) = sidecar.start_whisper(&self.app_handle, &whisper_model_path) {
                 log::error!("Failed to start whisper-server: {}", e);
                 self.emit_error(&format!("Whisper server error: {}", e));
                 return;
             }
-        }
+            (
+                Arc::clone(&sidecar.sidecar_exited),
+                Arc::clone(&sidecar.stderr_capture),
+            )
+        };
 
         // Wait for whisper-server to become healthy
-        if let Err(e) =
-            SidecarManager::wait_for_ready(config::WHISPER_SERVER_URL, "whisper-server")
-        {
+        if let Err(e) = SidecarManager::wait_for_ready(
+            config::WHISPER_SERVER_URL,
+            "whisper-server",
+            &sidecar_exited,
+            &stderr_capture,
+        ) {
             log::error!("{}", e);
             self.emit_error(&e);
             return;

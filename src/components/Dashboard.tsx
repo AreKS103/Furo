@@ -826,6 +826,7 @@ export function Dashboard({ theme, setTheme }: DashboardProps) {
   const [updateCheckMsg, setUpdateCheckMsg] = useState("");
   const updateRef = useRef<import("@tauri-apps/plugin-updater").Update | null>(null);
   const failedVersionRef = useRef<string | null>(null);
+  const [appTranslocation, setAppTranslocation] = useState(false);
 
   const holdHotkey = settings.hotkey_hold ?? "";
   const handsfreeHotkey = settings.hotkey_handsfree ?? "";
@@ -834,6 +835,14 @@ export function Dashboard({ theme, setTheme }: DashboardProps) {
   useEffect(() => {
     if (settings.theme) setTheme(settings.theme as "dark" | "light");
   }, [settings.theme, setTheme]);
+
+  /* macOS App Translocation warning */
+  useEffect(() => {
+    const unlisten = listen("furo://app-translocation", () => {
+      setAppTranslocation(true);
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, []);
 
   /* Check for updates on mount + when triggered from tray */
   const checkForUpdate = useCallback(async (manual = false) => {
@@ -997,6 +1006,14 @@ export function Dashboard({ theme, setTheme }: DashboardProps) {
 
       {/* ── Main content ──────────────────────────────────────────── */}
       <main className="flex flex-1 flex-col overflow-hidden bg-cream-50 dark:bg-zinc-900">
+        {/* App Translocation warning (macOS) */}
+        {appTranslocation && (
+          <div className="flex items-center gap-3 border-b border-amber-200 bg-amber-50 px-4 py-2.5 dark:border-amber-800 dark:bg-amber-950/50">
+            <span className="text-[13px] font-medium text-amber-800 dark:text-amber-300">
+              Furo is running from a temporary location. Move <strong>Furo.app</strong> to your Applications folder and relaunch for full functionality.
+            </span>
+          </div>
+        )}
         {/* Update banner */}
         {updateAvailable && (
           <div className="flex items-center justify-between border-b border-emerald-200 bg-emerald-50 px-4 py-2.5 dark:border-emerald-800 dark:bg-emerald-950/50">

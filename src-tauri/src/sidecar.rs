@@ -4,6 +4,8 @@
 //! as a Tauri sidecar (start, health poll, graceful shutdown).
 
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use tauri::AppHandle;
@@ -15,12 +17,18 @@ use crate::config;
 /// Running sidecar server handle.
 pub struct SidecarManager {
     whisper_child: Option<CommandChild>,
+    /// Set to `true` when the sidecar process terminates (crash or normal exit).
+    pub sidecar_exited: Arc<AtomicBool>,
+    /// Last stderr lines from the sidecar (for crash diagnostics).
+    pub stderr_capture: Arc<parking_lot::Mutex<Vec<String>>>,
 }
 
 impl SidecarManager {
     pub fn new() -> Self {
         Self {
             whisper_child: None,
+            sidecar_exited: Arc::new(AtomicBool::new(false)),
+            stderr_capture: Arc::new(parking_lot::Mutex::new(Vec::new())),
         }
     }
 
@@ -124,6 +132,12 @@ impl SidecarManager {
         // Drain sidecar stdout/stderr in a background thread.
         // If nobody reads from the pipe, the OS buffer fills up and
         // whisper-server blocks on its next write → deadlocks HTTP responses.
+        let exited_flag = Arc::clone(&self.sidecar_exited);
+        let stderr_buf = Arc::clone(&self.stderr_capture);
+        // Reset shared state for fresh spawn
+        self.sidecar_exited.store(false, Ordering::SeqCst);
+        self.stderr_capture.lock().clear();
+
         std::thread::Builder::new()
             .name("whisper-sidecar-drain".into())
             .spawn(move || {
@@ -133,9 +147,22 @@ impl SidecarManager {
                             log::debug!("[whisper-server] {}", String::from_utf8_lossy(&line));
                         }
                         CommandEvent::Stderr(line) => {
-                            log::warn!("[whisper-server stderr] {}", String::from_utf8_lossy(&line));
+                            let text = String::from_utf8_lossy(&line).to_string();
+                            log::warn!("[whisper-server stderr] {}", text);
+                            let mut buf = stderr_buf.lock();
+                            buf.push(text);
+                            if buf.len() > 50 {
+                                buf.remove(0);
+                            }
                         }
-                        CommandEvent::Terminated(_) => break,
+                        CommandEvent::Terminated(payload) => {
+                            log::error!(
+                                "[whisper-server] process terminated: {:?}",
+                                payload
+                            );
+                            exited_flag.store(true, Ordering::SeqCst);
+                            break;
+                        }
                         _ => {}
                     }
                 }
@@ -153,7 +180,12 @@ impl SidecarManager {
 
     /// Block until a sidecar HTTP server responds to `/health` (or GET `/`).
     /// Returns Ok(()) when ready, Err on timeout.
-    pub fn wait_for_ready(base_url: &str, name: &str) -> Result<(), String> {
+    pub fn wait_for_ready(
+        base_url: &str,
+        name: &str,
+        sidecar_exited: &AtomicBool,
+        stderr_capture: &parking_lot::Mutex<Vec<String>>,
+    ) -> Result<(), String> {
         let health_url = format!("{}/health", base_url);
         let client = reqwest::blocking::Client::builder()
             .timeout(Duration::from_secs(2))
@@ -169,6 +201,22 @@ impl SidecarManager {
         let mut attempt = 0u32;
 
         while Instant::now() < deadline {
+            // Short-circuit if the sidecar process already crashed
+            if sidecar_exited.load(Ordering::SeqCst) {
+                let lines = stderr_capture.lock();
+                let tail: Vec<&str> = lines.iter().rev().take(15).map(|s| s.as_str()).collect();
+                let tail: String = tail.into_iter().rev().collect::<Vec<_>>().join("\n");
+                return Err(format!(
+                    "{} crashed before becoming ready.\nLast stderr output:\n{}",
+                    name,
+                    if tail.is_empty() {
+                        "(no output captured)".to_string()
+                    } else {
+                        tail
+                    }
+                ));
+            }
+
             attempt += 1;
             match client.get(&health_url).send() {
                 Ok(resp) if resp.status().is_success() => {

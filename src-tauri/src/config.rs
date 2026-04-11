@@ -46,9 +46,9 @@ pub const WHISPER_SERVER_URL: &str = "http://127.0.0.1:8080";
 
 pub const LANGUAGE: &str = "en";
 
-/// Initial prompt — biases Whisper toward programming/technical vocabulary.
+/// Initial prompt — biases Whisper toward programming/technical vocabulary and user preferences.
 pub const INITIAL_PROMPT: &str = "\
-FastAPI, React, TypeScript, Tailwind CSS, async/await, kwargs, \
+Claude, Furo, FastAPI, React, TypeScript, Tailwind CSS, async/await, kwargs, \
 Tauri, CTranslate2, WebSocket, JSON, API, REST, GraphQL, \
 npm, pnpm, venv, PyAudio, CUDA, ONNX, int8, float16, \
 GitHub, Vercel, Docker, Kubernetes, PostgreSQL, Redis, \

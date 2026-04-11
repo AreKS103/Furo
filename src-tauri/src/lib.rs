@@ -415,6 +415,23 @@ pub fn run() {
                 .build(app)?;
 
             // ── Start backend pipeline ──────────────────────────
+            // macOS: Warn the user if running under App Translocation
+            // (Gatekeeper copies the .app to a read-only temp path).
+            #[cfg(target_os = "macos")]
+            {
+                if let Ok(exe) = std::env::current_exe() {
+                    let path = exe.display().to_string();
+                    if path.contains("AppTranslocation")
+                        || path.starts_with("/private/var/folders/")
+                    {
+                        log::warn!(
+                            "App Translocation detected — Furo is running from a temporary path"
+                        );
+                        let _ = app.emit("furo://app-translocation", true);
+                    }
+                }
+            }
+
             // Begin tracking the last external focused window so `capture_target`
             // can remember it even before the user presses the hotkey.
             typer::start_focus_tracker();
