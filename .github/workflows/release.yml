@@ -110,17 +110,23 @@ jobs:
           git clone --depth 1 https://github.com/ggerganov/whisper.cpp.git /tmp/whisper.cpp
           cd /tmp/whisper.cpp
 
-          # Build for Apple Silicon (arm64)
+          # Build for Apple Silicon (arm64) — static link so no dylib needed at runtime
           cmake -B build-arm64 -DCMAKE_BUILD_TYPE=Release -DWHISPER_BUILD_SERVER=ON -DWHISPER_COREML=OFF \
-            -DCMAKE_OSX_ARCHITECTURES=arm64
+            -DCMAKE_OSX_ARCHITECTURES=arm64 -DBUILD_SHARED_LIBS=OFF
           cmake --build build-arm64 --config Release -j$(sysctl -n hw.logicalcpu)
 
-          # Build for Intel (x86_64) — disable NATIVE and METAL.
+          # Build for Intel (x86_64) — disable NATIVE and METAL, static link.
           # Metal GPU shaders crash on Intel/AMD GPUs (whisper.cpp #1292);
           # Intel Macs will use CPU-only inference instead.
           cmake -B build-x86_64 -DCMAKE_BUILD_TYPE=Release -DWHISPER_BUILD_SERVER=ON -DWHISPER_COREML=OFF \
-            -DCMAKE_OSX_ARCHITECTURES=x86_64 -DGGML_NATIVE=OFF -DGGML_METAL=OFF
+            -DCMAKE_OSX_ARCHITECTURES=x86_64 -DGGML_NATIVE=OFF -DGGML_METAL=OFF -DBUILD_SHARED_LIBS=OFF
           cmake --build build-x86_64 --config Release -j$(sysctl -n hw.logicalcpu)
+
+          # Verify no dynamic libwhisper dependency
+          echo "=== Checking arm64 binary dependencies ==="
+          otool -L build-arm64/bin/whisper-server || true
+          echo "=== Checking x86_64 binary dependencies ==="
+          otool -L build-x86_64/bin/whisper-server || true
 
           # Tauri universal builds: compile step needs per-arch sidecars,
           # bundle step needs a universal-apple-darwin lipo binary.
