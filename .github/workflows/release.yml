@@ -115,9 +115,9 @@ jobs:
             -DCMAKE_OSX_ARCHITECTURES=arm64
           cmake --build build-arm64 --config Release -j$(sysctl -n hw.logicalcpu)
 
-          # Build for Intel (x86_64)
+          # Build for Intel (x86_64) — disable NATIVE to avoid -march=native resolving to apple-m1
           cmake -B build-x86_64 -DCMAKE_BUILD_TYPE=Release -DWHISPER_BUILD_SERVER=ON -DWHISPER_COREML=OFF \
-            -DCMAKE_OSX_ARCHITECTURES=x86_64
+            -DCMAKE_OSX_ARCHITECTURES=x86_64 -DGGML_NATIVE=OFF
           cmake --build build-x86_64 --config Release -j$(sysctl -n hw.logicalcpu)
 
           # Create universal binary via lipo
