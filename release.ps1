@@ -24,6 +24,24 @@ if (-not (Get-Command gh -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
+# ── Signing keys (paste from Bitwarden each run) ─────────────────────────────
+
+Write-Host ""
+Write-Host "  Signing credentials (from Bitwarden)" -ForegroundColor Cyan
+Write-Host "  Press Enter to keep existing value if already set." -ForegroundColor DarkGray
+Write-Host ""
+
+$inputKey = Read-Host "  Private key (long string)"
+if ($inputKey) { $env:TAURI_SIGNING_PRIVATE_KEY = $inputKey }
+
+if (-not $env:TAURI_SIGNING_PRIVATE_KEY) {
+    Write-Host "  ERROR: Private key is required. Aborting." -ForegroundColor Red
+    exit 1
+}
+
+$inputPwd = Read-Host "  Key password (short string, leave blank if none)"
+if ($inputPwd) { $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $inputPwd }
+
 if (-not (Test-Path ".git")) {
     Write-Host ""
     Write-Host "  ERROR: Not a git repository." -ForegroundColor Red
