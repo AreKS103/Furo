@@ -44,8 +44,12 @@
       "binaries/ggml-base.dll": "ggml-base.dll",
       "binaries/ggml-cpu.dll": "ggml-cpu.dll",
       "binaries/ggml-cpu-x64.dll": "ggml-cpu-x64.dll",
+      "binaries/ggml-cuda.dll": "ggml-cuda.dll",
       "binaries/whisper.dll": "whisper.dll",
-      "binaries/libomp140.x86_64.dll": "libomp140.x86_64.dll"
+      "binaries/libomp140.x86_64.dll": "libomp140.x86_64.dll",
+      "binaries/cublas64_13.dll": "cublas64_13.dll",
+      "binaries/cublasLt64_13.dll": "cublasLt64_13.dll",
+      "binaries/cudart64_13.dll": "cudart64_13.dll"
     },
     "icon": [
       "icons/32x32.png",

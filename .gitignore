@@ -23,12 +23,9 @@ desktop.ini
 .env
 .env.*
 
-# ── Large CUDA/GPU binaries (>100 MB — GitHub limit) ───
+# ── Large CUDA/GPU binaries (tracked via Git LFS) ──────
 # These are required at runtime for GPU-accelerated whisper.
-# Download separately: see README.md "GPU Setup" section.
-src-tauri/binaries/cublas64_13.dll
-src-tauri/binaries/cublasLt64_13.dll
-src-tauri/binaries/ggml-cuda.dll
+# Managed by Git LFS due to GitHub's 100 MB file size limit.
 
 # ── Lock files managed by package manager ───────────────
 # Keep package-lock.json tracked (needed for npm ci)
