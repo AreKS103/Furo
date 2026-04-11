@@ -20,10 +20,7 @@ export interface SocketState {
   volume: number;
 }
 
-/**
- * Tauri IPC hook — replaces the WebSocket-based useSocket.
- * Listens for furo:// events and provides the same interface.
- */
+/** Tauri IPC hook — listens for furo:// events emitted by the Rust backend. */
 export function useFuro(): SocketState {
   const [state, setState] = useState<ServerState>("loading");
   const [message, setMessage] = useState("Starting…");

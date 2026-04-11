@@ -49,7 +49,7 @@ fn main() {
                 continue;
             }
 
-            // --- copy original file to binaries/ (keeps triple name for old externalBin path) ---
+            // Copy original file to binaries/ (keeps triple name for externalBin)
             let dst = dst_binaries.join(entry.file_name());
             let needs_copy = if dst.exists() {
                 src.metadata().unwrap().modified().unwrap()
@@ -64,8 +64,8 @@ fn main() {
 
             if let Some(stem) = name_str.strip_suffix(".exe") {
                 if let Some(base) = stem.strip_suffix(&triple_suffix) {
-                    // --- copy triple-stripped .exe to binaries/ for dev-mode resolution ---
-                    // (tauri-plugin-shell sidecar() appends .exe without triple)
+                    // Copy triple-stripped .exe for dev-mode resolution
+                    // (sidecar() appends .exe without triple)
                     let short_name = format!("{}.exe", base);
                     let dst_short = dst_binaries.join(&short_name);
                     let needs_short = if dst_short.exists() {
@@ -79,9 +79,8 @@ fn main() {
                         std::fs::copy(&src, &dst_short).unwrap();
                     }
 
-                    // --- ALSO copy triple-named exe to TARGET ROOT for tauri-bundler ---
-                    // externalBin: ["whisper-server"] → bundler looks for
-                    // <target_profile>/whisper-server-<triple>.exe (no path prefix)
+                    // Also copy triple-named exe to target root for tauri-bundler
+                    // (bundler looks for <target_profile>/whisper-server-<triple>.exe)
                     let dst_root_triple = target_profile_dir.join(entry.file_name());
                     let needs_root_triple = if dst_root_triple.exists() {
                         src.metadata().unwrap().modified().unwrap()
@@ -94,8 +93,7 @@ fn main() {
                         std::fs::copy(&src, &dst_root_triple).unwrap();
                     }
 
-                    // --- ALSO copy short-named exe to TARGET ROOT for dev sidecar resolution ---
-                    // sidecar("whisper-server") → looks for <exe_dir>/whisper-server.exe
+                    // Also copy short-named exe to target root for dev sidecar resolution
                     let dst_root_short = target_profile_dir.join(&short_name);
                     let needs_root_short = if dst_root_short.exists() {
                         src.metadata().unwrap().modified().unwrap()
@@ -109,9 +107,7 @@ fn main() {
                     }
                 }
             } else if name_str.ends_with(".dll") {
-                // --- copy DLLs to TARGET ROOT so whisper-server.exe can find them at runtime ---
-                // In dev mode, the sidecar exe runs from <target_profile>/ so DLLs must be there.
-                // (Non-Windows files are already skipped at the top of the loop.)
+                // Copy DLLs to target root so whisper-server.exe can find them at runtime
                 let dst_root_dll = target_profile_dir.join(entry.file_name());
                 let needs_dll = if dst_root_dll.exists() {
                     src.metadata().unwrap().modified().unwrap()
@@ -124,7 +120,7 @@ fn main() {
                     std::fs::copy(&src, &dst_root_dll).unwrap();
                 }
             } else if !name_str.contains('.') {
-                // --- macOS: extensionless sidecar binaries (e.g. whisper-server-aarch64-apple-darwin) ---
+                // macOS: extensionless sidecar binaries
                 if let Some(base) = name_str.strip_suffix(&triple_suffix) {
                     // Copy triple-stripped binary for dev-mode resolution
                     let dst_short = dst_binaries.join(base);

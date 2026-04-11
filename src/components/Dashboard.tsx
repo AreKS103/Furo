@@ -288,8 +288,6 @@ function HomePage({
   return (
     <div className="flex-1 overflow-y-auto">
       <div className="px-8 py-8">
-        {/* Logo image */}
-        {/* Welcome header */}
         <h1 className="mb-6 font-serif text-[26px] font-semibold text-warm-900 dark:text-zinc-50">
           Welcome back
         </h1>
