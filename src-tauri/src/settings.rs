@@ -16,8 +16,20 @@ fn defaults() -> HashMap<String, String> {
         "model".into(),
         "deepdml/faster-whisper-large-v3-turbo-ct2".into(),
     );
-    m.insert("hotkey_hold".into(), "ctrl+space".into());
-    m.insert("hotkey_handsfree".into(), "ctrl+shift+space".into());
+
+    // macOS: use alt+space (Option+Space) to avoid the Ctrl+Space system shortcut
+    // (input source switching) which intercepts the combo before apps see it.
+    #[cfg(target_os = "macos")]
+    {
+        m.insert("hotkey_hold".into(), "alt+space".into());
+        m.insert("hotkey_handsfree".into(), "alt+shift+space".into());
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        m.insert("hotkey_hold".into(), "ctrl+space".into());
+        m.insert("hotkey_handsfree".into(), "ctrl+shift+space".into());
+    }
+
     m.insert("theme".into(), "dark".into());
     m.insert("language".into(), "en".into());
     m.insert("compute_type".into(), "int8_float16".into());
@@ -95,6 +107,20 @@ impl SettingsStore {
             {
                 log::info!("Migrated hotkey_toggle '{}' → hotkey_hold.", old_hk);
                 data.insert("hotkey_hold".into(), old_hk);
+            }
+        }
+
+        // macOS: migrate ctrl+space → alt+space (ctrl+space is a macOS system
+        // shortcut for input source switching and gets intercepted by the OS).
+        #[cfg(target_os = "macos")]
+        {
+            if data.get("hotkey_hold").map(|s| s.as_str()) == Some("ctrl+space") {
+                log::info!("macOS: migrating hotkey_hold ctrl+space → alt+space");
+                data.insert("hotkey_hold".into(), "alt+space".into());
+            }
+            if data.get("hotkey_handsfree").map(|s| s.as_str()) == Some("ctrl+shift+space") {
+                log::info!("macOS: migrating hotkey_handsfree ctrl+shift+space → alt+shift+space");
+                data.insert("hotkey_handsfree".into(), "alt+shift+space".into());
             }
         }
 

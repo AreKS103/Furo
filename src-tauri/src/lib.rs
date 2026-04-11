@@ -140,6 +140,17 @@ fn diagnose_macos(pipeline: tauri::State<'_, Arc<FuroPipeline>>) -> String {
             }
         }
 
+        // Check Accessibility / Input Monitoring permission.
+        #[cfg(target_os = "macos")]
+        {
+            extern "C" { fn AXIsProcessTrusted() -> bool; }
+            let trusted = unsafe { AXIsProcessTrusted() };
+            lines.push(format!("ACCESSIBILITY_TRUSTED: {}", trusted));
+            if !trusted {
+                lines.push("ACCESSIBILITY_NOTE: ⚠️ Grant Accessibility in System Settings > Privacy & Security for hotkeys".to_string());
+            }
+        }
+
         if let Some(exe_dir) = exe.parent() {
             // Check sidecar binary exists
             let sidecar_name = if cfg!(target_os = "windows") { "whisper-server.exe" } else { "whisper-server" };

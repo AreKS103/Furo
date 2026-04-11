@@ -827,6 +827,7 @@ export function Dashboard({ theme, setTheme }: DashboardProps) {
   const updateRef = useRef<import("@tauri-apps/plugin-updater").Update | null>(null);
   const failedVersionRef = useRef<string | null>(null);
   const [appTranslocation, setAppTranslocation] = useState(false);
+  const [hotkeyPermission, setHotkeyPermission] = useState(false);
 
   const holdHotkey = settings.hotkey_hold ?? "";
   const handsfreeHotkey = settings.hotkey_handsfree ?? "";
@@ -840,6 +841,14 @@ export function Dashboard({ theme, setTheme }: DashboardProps) {
   useEffect(() => {
     const unlisten = listen("furo://app-translocation", () => {
       setAppTranslocation(true);
+    });
+    return () => { unlisten.then((fn) => fn()); };
+  }, []);
+
+  /* macOS Accessibility / Input Monitoring permission warning */
+  useEffect(() => {
+    const unlisten = listen("furo://hotkey-permission", () => {
+      setHotkeyPermission(true);
     });
     return () => { unlisten.then((fn) => fn()); };
   }, []);
@@ -1064,6 +1073,14 @@ export function Dashboard({ theme, setTheme }: DashboardProps) {
           <div className="flex items-center gap-3 border-b border-amber-200 bg-amber-50 px-4 py-2.5 dark:border-amber-800 dark:bg-amber-950/50">
             <span className="text-[13px] font-medium text-amber-800 dark:text-amber-300">
               Furo is running from a temporary location. Move <strong>Furo.app</strong> to your Applications folder and relaunch for full functionality.
+            </span>
+          </div>
+        )}
+        {/* Hotkey permission warning (macOS) */}
+        {hotkeyPermission && (
+          <div className="flex items-center gap-3 border-b border-red-200 bg-red-50 px-4 py-2.5 dark:border-red-800 dark:bg-red-950/50">
+            <span className="text-[13px] font-medium text-red-800 dark:text-red-300">
+              Hotkeys are disabled — grant <strong>Accessibility</strong> permission for Furo in System Settings &gt; Privacy &amp; Security, then restart the app.
             </span>
           </div>
         )}

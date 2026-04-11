@@ -79,7 +79,7 @@ const MOUSE_TRIGGERS: &[&str] = &["mouse1", "mouse2", "mouse3", "mouse4", "mouse
 /// Parse a hotkey string like "ctrl+space" or "cmd+f9" into modifiers + trigger.
 pub fn parse_hotkey_combo(hotkey_str: &str) -> HotkeyCombo {
     let parts: Vec<&str> = hotkey_str.split('+').map(|s| s.trim()).collect();
-    let modifier_names: HashSet<&str> = ["ctrl", "alt", "shift", "win", "cmd"].into_iter().collect();
+    let modifier_names: HashSet<&str> = ["ctrl", "alt", "shift", "win", "cmd", "option"].into_iter().collect();
 
     let mut modifiers = HashSet::new();
     let last = parts.last().map(|s| s.to_lowercase()).unwrap_or_default();
@@ -88,7 +88,12 @@ pub fn parse_hotkey_combo(hotkey_str: &str) -> HotkeyCombo {
         let lower = part.to_lowercase();
         if modifier_names.contains(lower.as_str()) {
             // "cmd" is an alias for "win" (maps to Command on macOS, Win on Windows).
-            let normalized = if lower == "cmd" { "win".to_string() } else { lower };
+            // "option" is an alias for "alt" (macOS name for the Alt/Option key).
+            let normalized = match lower.as_str() {
+                "cmd" => "win".to_string(),
+                "option" => "alt".to_string(),
+                _ => lower,
+            };
             modifiers.insert(normalized);
         }
     }
@@ -116,7 +121,11 @@ pub fn parse_hotkey_combo(hotkey_str: &str) -> HotkeyCombo {
     // Try named keys (including modifier names as standalone triggers).
     // All key codes use Windows VK values as the canonical representation;
     // the macOS event tap callback translates native keycodes to VK.
-    let trigger_lower = if last == "cmd" { "win".to_string() } else { last.clone() };
+    let trigger_lower = match last.as_str() {
+        "cmd" => "win".to_string(),
+        "option" => "alt".to_string(),
+        _ => last.clone(),
+    };
     let vk = match trigger_lower.as_str() {
         "ctrl" => 0x11,
         "alt" => 0x12,

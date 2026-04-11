@@ -1,13 +1,15 @@
 //! macOS global hotkey system — CGEvent tap.
 //!
 //! Uses a Quartz Event Tap to intercept key and mouse events system-wide.
-//! Requires Accessibility permissions (System Preferences > Privacy & Security > Accessibility).
+//! Requires Accessibility or Input Monitoring permission
+//! (System Settings > Privacy & Security > Input Monitoring / Accessibility).
 
 use crossbeam_channel::Sender;
 use std::ffi::c_void;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
+use std::time::Duration;
 
 use super::{
     hotkey_worker, parse_hotkey_combo, HotkeyCallbacks, HotkeyEvent, MouseButton,
@@ -77,6 +79,60 @@ extern "C" {
 
     // kCFRunLoopCommonModes is a global CFStringRef
     static kCFRunLoopCommonModes: *const c_void;
+
+    // For building the options dictionary used by AXIsProcessTrustedWithOptions.
+    static kCFBooleanTrue: *const c_void;
+    fn CFDictionaryCreate(
+        allocator: *const c_void,
+        keys: *const *const c_void,
+        values: *const *const c_void,
+        num_values: isize,
+        key_callbacks: *const c_void,
+        value_callbacks: *const c_void,
+    ) -> *const c_void;
+    static kCFTypeDictionaryKeyCallBacks: u8;
+    static kCFTypeDictionaryValueCallBacks: u8;
+}
+
+// ── Accessibility framework FFI ───────────────────────────────────────────
+
+#[link(name = "ApplicationServices", kind = "framework")]
+extern "C" {
+    fn AXIsProcessTrusted() -> bool;
+    fn AXIsProcessTrustedWithOptions(options: *const c_void) -> bool;
+    static kAXTrustedCheckOptionPrompt: *const c_void;
+}
+
+/// Check if Furo has Accessibility (or Input Monitoring) permission.
+/// If not, show the macOS prompt asking the user to grant access.
+/// Returns `true` if already trusted, `false` if the prompt was shown.
+fn check_and_prompt_accessibility() -> bool {
+    unsafe {
+        if AXIsProcessTrusted() {
+            log::info!("Accessibility permission: granted.");
+            return true;
+        }
+
+        log::warn!(
+            "Furo does not have Accessibility / Input Monitoring permission — prompting user."
+        );
+
+        // Build options dictionary: { kAXTrustedCheckOptionPrompt: true }
+        // This triggers the macOS system dialog asking the user to grant access.
+        let keys = [kAXTrustedCheckOptionPrompt];
+        let values = [kCFBooleanTrue];
+        let options = CFDictionaryCreate(
+            std::ptr::null(),
+            keys.as_ptr(),
+            values.as_ptr(),
+            1,
+            &kCFTypeDictionaryKeyCallBacks as *const u8 as *const c_void,
+            &kCFTypeDictionaryValueCallBacks as *const u8 as *const c_void,
+        );
+        let _result = AXIsProcessTrustedWithOptions(options);
+        CFRelease(options);
+        false
+    }
 }
 
 // ── macOS keycode → Windows VK mapping ────────────────────────────────────
@@ -310,7 +366,7 @@ impl HotkeyListener {
         hold_combo_str: &str,
         handsfree_combo_str: &str,
         callbacks: HotkeyCallbacks,
-    ) -> Self {
+    ) -> Result<Self, String> {
         let hold_combo = parse_hotkey_combo(hold_combo_str);
         let handsfree_combo = parse_hotkey_combo(handsfree_combo_str);
 
@@ -318,6 +374,15 @@ impl HotkeyListener {
         *HOOK_SENDER.lock().unwrap() = Some(sender);
 
         let stop_flag = Arc::new(AtomicBool::new(false));
+
+        // Pre-check: prompt for Accessibility if not trusted.
+        // Furo needs Accessibility for text injection (typer_mac) anyway,
+        // and Accessibility permission is a superset of Input Monitoring
+        // (so it also covers listen-only CGEventTaps).
+        let _trusted = check_and_prompt_accessibility();
+
+        // Channel for the tap thread to report success/failure.
+        let (tap_result_tx, tap_result_rx) = std::sync::mpsc::sync_channel::<bool>(1);
 
         // Spawn event tap thread (equivalent to Windows hook thread)
         let tap_thread = thread::Builder::new()
@@ -338,7 +403,7 @@ impl HotkeyListener {
                     let tap = CGEventTapCreate(
                         KCG_SESSION_EVENT_TAP,
                         KCG_HEAD_INSERT_EVENT_TAP,
-                        1, // kCGEventTapOptionListenOnly — observe-only, no Accessibility needed
+                        1, // kCGEventTapOptionListenOnly — passive observer
                         mask,
                         event_tap_callback,
                         std::ptr::null_mut(),
@@ -346,11 +411,15 @@ impl HotkeyListener {
 
                     if tap.is_null() {
                         log::error!(
-                            "CGEventTapCreate failed — Input Monitoring permission not granted. \
-                             Go to System Settings > Privacy & Security > Input Monitoring and add Furo."
+                            "CGEventTapCreate failed — Accessibility / Input Monitoring \
+                             permission not granted. Go to System Settings > Privacy & \
+                             Security > Input Monitoring (or Accessibility) and add Furo."
                         );
+                        let _ = tap_result_tx.send(false);
                         return;
                     }
+
+                    let _ = tap_result_tx.send(true);
 
                     // Store tap handle so the callback can re-enable on timeout.
                     *EVENT_TAP_PORT.lock().unwrap() = Some(SendPtr(tap));
@@ -376,6 +445,21 @@ impl HotkeyListener {
             })
             .expect("Failed to spawn event tap thread");
 
+        // Wait for the tap thread to report whether the event tap was created.
+        let tap_ok = tap_result_rx.recv_timeout(Duration::from_secs(3)).unwrap_or(false);
+
+        if !tap_ok {
+            // Tap thread already exited; join it and return an error.
+            let _ = tap_thread.join();
+            *HOOK_SENDER.lock().unwrap() = None;
+            return Err(
+                "Hotkeys unavailable — grant Accessibility or Input Monitoring \
+                 permission for Furo in System Settings > Privacy & Security, \
+                 then restart the app."
+                    .into(),
+            );
+        }
+
         // Spawn worker thread (same as Windows)
         let stop = stop_flag.clone();
         let worker_thread = thread::Builder::new()
@@ -391,11 +475,11 @@ impl HotkeyListener {
             handsfree_combo_str,
         );
 
-        Self {
+        Ok(Self {
             stop_flag,
             tap_thread: Some(tap_thread),
             worker_thread: Some(worker_thread),
-        }
+        })
     }
 
     pub fn stop(&mut self) {

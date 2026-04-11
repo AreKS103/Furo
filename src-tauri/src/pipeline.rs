@@ -472,7 +472,16 @@ impl FuroPipeline {
         };
 
         let listener = HotkeyListener::start(&hold_str, &hf_str, callbacks);
-        *self.hotkey_listener.lock() = Some(listener);
+        match listener {
+            Ok(l) => {
+                *self.hotkey_listener.lock() = Some(l);
+            }
+            Err(e) => {
+                log::error!("Hotkey listener failed to start: {}", e);
+                self.emit_error(&e);
+                let _ = self.app_handle.emit("furo://hotkey-permission", ());
+            }
+        }
     }
 
     pub fn stop_hotkey_listener(&self) {

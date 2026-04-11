@@ -157,7 +157,7 @@ impl HotkeyListener {
         hold_combo_str: &str,
         handsfree_combo_str: &str,
         callbacks: HotkeyCallbacks,
-    ) -> Self {
+    ) -> Result<Self, String> {
         let hold_combo = parse_hotkey_combo(hold_combo_str);
         let handsfree_combo = parse_hotkey_combo(handsfree_combo_str);
 
@@ -221,12 +221,12 @@ impl HotkeyListener {
             handsfree_combo_str
         );
 
-        Self {
+        Ok(Self {
             hook_thread_id,
             stop_flag,
             hook_thread: Some(hook_thread),
             worker_thread: Some(worker_thread),
-        }
+        })
     }
 
     pub fn stop(&mut self) {
