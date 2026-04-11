@@ -226,7 +226,7 @@ pub fn run() {
             let x = (screen_size.width as f64 / scale - widget_w) / 2.0;
             let y = screen_size.height as f64 / scale - widget_h - 60.0;
 
-            let _widget = WebviewWindowBuilder::new(
+            let builder = WebviewWindowBuilder::new(
                 app,
                 "widget",
                 WebviewUrl::App("index.html?window=widget".into()),
@@ -235,14 +235,17 @@ pub fn run() {
             .inner_size(widget_w, widget_h)
             .position(x, y)
             .decorations(false)
-            .transparent(true)
-            .shadow(false)
             .always_on_top(true)
             .visible(true)
             .skip_taskbar(true)
             .resizable(false)
-            .focused(false)
-            .build()?;
+            .focused(false);
+
+            // .transparent() / .shadow() are not available on macOS WebviewWindowBuilder
+            #[cfg(target_os = "windows")]
+            let builder = builder.transparent(true).shadow(false);
+
+            let _widget = builder.build()?;
 
             // ── System tray ─────────────────────────────────────
             let tray_menu = build_tray_menu(app)?;

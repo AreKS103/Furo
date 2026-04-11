@@ -10,7 +10,7 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use tauri::AppHandle;
-use tauri_plugin_shell::process::CommandChild;
+use tauri_plugin_shell::process::{CommandChild, CommandEvent};
 use tauri_plugin_shell::ShellExt;
 
 use crate::config;
@@ -83,9 +83,31 @@ impl SidecarManager {
                 "/v1/audio/transcriptions",
             ]);
 
-        let (_rx, child) = cmd
+        let (mut rx, child) = cmd
             .spawn()
             .map_err(|e| format!("Failed to spawn whisper-server: {}", e))?;
+
+        // Drain sidecar stdout/stderr in a background thread.
+        // If nobody reads from the pipe, the OS buffer fills up and
+        // whisper-server blocks on its next write → deadlocks HTTP responses.
+        std::thread::Builder::new()
+            .name("whisper-sidecar-drain".into())
+            .spawn(move || {
+                while let Some(event) = rx.blocking_recv() {
+                    match event {
+                        CommandEvent::Stdout(line) => {
+                            log::debug!("[whisper-server] {}", String::from_utf8_lossy(&line));
+                        }
+                        CommandEvent::Stderr(line) => {
+                            log::warn!("[whisper-server stderr] {}", String::from_utf8_lossy(&line));
+                        }
+                        CommandEvent::Terminated(_) => break,
+                        _ => {}
+                    }
+                }
+                log::info!("whisper-server sidecar stream ended.");
+            })
+            .ok();
 
         self.whisper_child = Some(child);
         log::info!(

@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicI32, Ordering};
 use std::thread;
 use std::time::Duration;
 
-use objc::runtime::{Class, Object, BOOL, YES};
+use objc::runtime::{Object, BOOL, YES};
 use objc::{class, msg_send, sel, sel_impl};
 
 use crate::config;
@@ -118,7 +118,7 @@ fn restore_focus(target_pid: i32) -> bool {
         }
         // activateIgnoringOtherApps: is available since macOS 10.6.
         let ok: BOOL = msg_send![app, activateIgnoringOtherApps: YES];
-        ok != 0
+        ok
     }
 }
 

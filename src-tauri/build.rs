@@ -96,9 +96,10 @@ fn main() {
                         std::fs::copy(&src, &dst_root_short).unwrap();
                     }
                 }
-            } else if name_str.ends_with(".dll") {
+            } else if name_str.ends_with(".dll") && target.contains("windows") {
                 // --- copy DLLs to TARGET ROOT so whisper-server.exe can find them at runtime ---
                 // In dev mode, the sidecar exe runs from <target_profile>/ so DLLs must be there.
+                // Only on Windows — DLLs are irrelevant on macOS/Linux.
                 let dst_root_dll = target_profile_dir.join(entry.file_name());
                 let needs_dll = if dst_root_dll.exists() {
                     src.metadata().unwrap().modified().unwrap()
