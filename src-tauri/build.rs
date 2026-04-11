@@ -118,5 +118,6 @@ fn main() {
 
     tauri_build::build();
     // Ensure winmm.lib is linked for PlaySoundA (widget activation audio).
+    #[cfg(target_os = "windows")]
     println!("cargo:rustc-link-lib=winmm");
 }

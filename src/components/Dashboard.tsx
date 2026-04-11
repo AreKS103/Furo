@@ -276,7 +276,9 @@ function HomePage({
       await navigator.clipboard.writeText(entry.text);
       setCopiedId(entry.id);
       setTimeout(() => setCopiedId(null), 1500);
-    } catch { /* */ }
+    } catch (e) {
+      console.warn("[clipboard] copy failed:", e);
+    }
   };
 
   const groups = groupByDate(entries);
@@ -297,7 +299,7 @@ function HomePage({
           <img
             src="/HeroImage.png"
             className="h-[180px] w-full object-cover"
-            alt=""
+            alt="Furo voice dictation"
             draggable={false}
           />
           {/* Dark gradient scrim — heavier on right so stats are readable */}
@@ -435,8 +437,8 @@ function SettingsPage({
   }, [settings]);
 
   useEffect(() => {
-    invoke<Mic[]>("list_microphones").then((d) => setMics(d ?? [])).catch(() => {});
-    invoke<boolean>("get_autostart").then(setAutostart).catch(() => {});
+    invoke<Mic[]>("list_microphones").then((d) => setMics(d ?? [])).catch((e) => console.warn("[settings] list mics:", e));
+    invoke<boolean>("get_autostart").then(setAutostart).catch((e) => console.warn("[settings] get autostart:", e));
   }, []);
 
   /* ── Rebind effect ───────────────────────────────────────────────
@@ -527,7 +529,9 @@ function SettingsPage({
     try {
       await invoke("set_autostart", { enabled: next });
       setAutostart(next);
-    } catch { /* */ }
+    } catch (e) {
+      console.warn("[settings] set autostart:", e);
+    }
   };
 
   const inputCls =
@@ -870,7 +874,7 @@ export function Dashboard({ theme, setTheme }: DashboardProps) {
   }, [lastError]);
 
   const saveSetting = useCallback(async (key: string, value: string) => {
-    await invoke("update_settings", { data: { [key]: value } }).catch(() => {});
+    await invoke("update_settings", { data: { [key]: value } }).catch((e) => console.warn("[settings] save:", e));
   }, []);
 
   const navItem = (
