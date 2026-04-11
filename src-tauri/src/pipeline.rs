@@ -583,7 +583,7 @@ impl FuroPipeline {
                             if let Some(ref mut vad) = *vad_guard {
                                 vad.is_speech(&frame)
                             } else {
-                                false
+                                true // No VAD available — pass all audio through
                             }
                         };
 
