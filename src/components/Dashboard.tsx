@@ -771,6 +771,11 @@ function SettingsPage({
             </div>
           </section>
         </div>
+
+        {/* Version footer */}
+        <div className="mt-6 pb-2 text-center">
+          <span className="text-[11px] text-warm-300 dark:text-zinc-600">Furo v{APP_VERSION}</span>
+        </div>
       </div>
     </div>
   );

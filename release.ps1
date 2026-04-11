@@ -112,34 +112,55 @@ if ($LASTEXITCODE -ne 0) {
     exit 1
 }
 
-# 5. Show artifact locations
+# 5. Locate build artifacts and generate latest.json
 $bundleDir = "C:\Users\alpla\AppData\Local\furo-target\release\bundle"
 $nsisDir   = "$bundleDir\nsis"
-$installer = Get-ChildItem $nsisDir -Filter "*.exe"     | Select-Object -First 1
-$sig       = Get-ChildItem $nsisDir -Filter "*.exe.sig" | Select-Object -First 1
-$manifest  = Get-ChildItem $bundleDir -Filter "latest.json" | Select-Object -First 1
+$installer  = Get-ChildItem $nsisDir -Filter "Furo_${next}_x64-setup.exe"          | Select-Object -First 1
+$updaterZip = Get-ChildItem $nsisDir -Filter "Furo_${next}_x64-setup.nsis.zip"     | Select-Object -First 1
+$zipSig     = Get-ChildItem $nsisDir -Filter "Furo_${next}_x64-setup.nsis.zip.sig" | Select-Object -First 1
 
-if (-not $installer -or -not $sig -or -not $manifest) {
+if (-not $installer -or -not $updaterZip -or -not $zipSig) {
     Write-Host ""
-    Write-Host "  ERROR: Could not find all 3 build artifacts." -ForegroundColor Red
-    Write-Host "  Expected in: $bundleDir" -ForegroundColor Gray
+    Write-Host "  ERROR: Could not find build artifacts for v$next." -ForegroundColor Red
+    Write-Host "  Expected in: $nsisDir" -ForegroundColor Gray
     exit 1
 }
+
+# Build latest.json (Tauri v2 does not generate this automatically)
+$tagName      = "v$next"
+$releaseNotes = if ($Notes) { $Notes } else { "Furo $tagName" }
+$signature    = Get-Content $zipSig.FullName -Raw
+$downloadUrl  = "https://github.com/AreKS103/Furo/releases/download/$tagName/$($updaterZip.Name)"
+$pubDate      = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
+
+$latestJson = @{
+    version   = $next
+    notes     = $releaseNotes
+    pub_date  = $pubDate
+    platforms = @{
+        "windows-x86_64" = @{
+            signature = $signature.Trim()
+            url       = $downloadUrl
+        }
+    }
+} | ConvertTo-Json -Depth 5
+
+$manifestPath = "$nsisDir\latest.json"
+Set-Content $manifestPath $latestJson -Encoding UTF8
+Write-Host "  Generated: latest.json"
 
 Write-Host ""
 Write-Host "  Build complete! v$next" -ForegroundColor Green
 Write-Host ""
 Write-Host "  Artifacts:" -ForegroundColor White
 Write-Host "    $($installer.FullName)" -ForegroundColor Gray
-Write-Host "    $($sig.FullName)"       -ForegroundColor Gray
-Write-Host "    $($manifest.FullName)"  -ForegroundColor Gray
+Write-Host "    $($updaterZip.FullName)" -ForegroundColor Gray
+Write-Host "    $($zipSig.FullName)" -ForegroundColor Gray
+Write-Host "    $manifestPath" -ForegroundColor Gray
 
 # 6. Git commit + tag ─────────────────────────────────────────────────────────
 Write-Host ""
 Write-Host "  Committing version bump..." -ForegroundColor Yellow
-
-$tagName = "v$next"
-$releaseNotes = if ($Notes) { $Notes } else { "Furo $tagName" }
 
 git add src-tauri/tauri.conf.json package.json
 git commit -m "release: $tagName"
@@ -157,8 +178,9 @@ Write-Host "  Creating GitHub release $tagName..." -ForegroundColor Yellow
 
 gh release create $tagName `
     "$($installer.FullName)" `
-    "$($sig.FullName)" `
-    "$($manifest.FullName)" `
+    "$($updaterZip.FullName)" `
+    "$($zipSig.FullName)" `
+    "$manifestPath" `
     --title "Furo $tagName" `
     --notes $releaseNotes
 
