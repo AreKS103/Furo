@@ -191,17 +191,30 @@ export function FloatingWidget() {
     invoke("widget_hold_release").catch(() => {});
   };
 
+  // On macOS, mouse events on transparent windows can be unreliable.
+  // Use a timeout to auto-collapse if mouse leaves and doesn't return.
+  const hoverTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleEnter = () => {
+    if (hoverTimeout.current) { clearTimeout(hoverTimeout.current); hoverTimeout.current = null; }
+    setIsHovered(true);
+  };
+  const handleLeave = () => {
+    // Small delay prevents flicker from macOS hit-test edge cases
+    hoverTimeout.current = setTimeout(() => {
+      setIsHovered(false);
+      if (isHoldingRef.current) {
+        isHoldingRef.current = false;
+        invoke("widget_hold_release").catch(() => {});
+      }
+    }, 80);
+  };
+
   return (
     <div
       className="fixed inset-0 flex items-center justify-center cursor-pointer"
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => {
-        setIsHovered(false);
-        if (isHoldingRef.current) {
-          isHoldingRef.current = false;
-          invoke("widget_hold_release").catch(() => {});
-        }
-      }}
+      onMouseEnter={handleEnter}
+      onMouseLeave={handleLeave}
       onMouseDown={handleMouseDown}
       onMouseUp={handleMouseUp}
     >

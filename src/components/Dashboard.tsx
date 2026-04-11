@@ -791,7 +791,15 @@ function SettingsPage({
                   {diagLoading ? "Running…" : "Run Diagnostics"}
                 </button>
                 {diagOutput && (
-                  <pre className="mt-2 max-h-48 overflow-auto rounded-lg bg-cream-50 p-2.5 text-[11px] leading-relaxed text-warm-700 dark:bg-zinc-900 dark:text-zinc-300">{diagOutput}</pre>
+                  <div className="relative mt-2">
+                    <button
+                      onClick={() => navigator.clipboard.writeText(diagOutput)}
+                      className="absolute right-2 top-2 z-10 rounded border border-cream-300 bg-cream-100 px-2 py-0.5 text-[10px] text-warm-600 hover:bg-cream-200 dark:border-zinc-600 dark:bg-zinc-800 dark:text-zinc-400 dark:hover:bg-zinc-700"
+                    >
+                      Copy
+                    </button>
+                    <pre className="max-h-48 overflow-auto rounded-lg bg-cream-50 p-2.5 pr-14 text-[11px] leading-relaxed text-warm-700 dark:bg-zinc-900 dark:text-zinc-300">{diagOutput}</pre>
+                  </div>
                 )}
               </div>
             </div>
@@ -817,6 +825,7 @@ export function Dashboard({ theme, setTheme }: DashboardProps) {
   const [updateStatus, setUpdateStatus] = useState<"idle" | "downloading" | "ready">("idle");
   const [updateCheckMsg, setUpdateCheckMsg] = useState("");
   const updateRef = useRef<import("@tauri-apps/plugin-updater").Update | null>(null);
+  const failedVersionRef = useRef<string | null>(null);
 
   const holdHotkey = settings.hotkey_hold ?? "";
   const handsfreeHotkey = settings.hotkey_handsfree ?? "";
@@ -833,6 +842,11 @@ export function Dashboard({ theme, setTheme }: DashboardProps) {
       const { check } = await import("@tauri-apps/plugin-updater");
       const update = await check();
       if (update) {
+        // Don't re-show a version that already failed to install
+        // unless the user explicitly triggered a manual check.
+        if (!manual && failedVersionRef.current === update.version) {
+          return;
+        }
         updateRef.current = update;
         setUpdateAvailable(true);
         if (manual) setUpdateCheckMsg("");
@@ -881,6 +895,9 @@ export function Dashboard({ theme, setTheme }: DashboardProps) {
       setUpdateStatus("idle");
       const msg = e instanceof Error ? e.message : String(e);
       console.error("[updater] install failed:", msg);
+
+      // Remember the failed version so auto-check won't re-show the banner.
+      failedVersionRef.current = update.version;
 
       // Show specific guidance for the known macOS permission error
       if (msg.includes("Failed to move") || msg.includes("PermissionDenied") || msg.includes("permission")) {

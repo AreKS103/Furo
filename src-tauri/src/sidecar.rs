@@ -98,8 +98,18 @@ impl SidecarManager {
             "/v1/audio/transcriptions",
         ];
 
-        // Flash Attention is supported on both CUDA (Windows) and Metal (macOS).
-        args.push("--flash-attn");
+        // Flash Attention works with CUDA (Windows) and Metal on Apple Silicon.
+        // On Intel Macs (x86_64), Metal flash attention kernels can crash with
+        // AMD/Intel GPUs, so only enable on arm64 macOS and all of Windows.
+        let use_flash_attn = if cfg!(target_os = "macos") {
+            std::env::consts::ARCH == "aarch64"
+        } else {
+            true
+        };
+        if use_flash_attn {
+            args.push("--flash-attn");
+        }
+        log::info!("whisper-server args: {:?} (flash_attn={})", args, use_flash_attn);
 
         let cmd = app
             .shell()

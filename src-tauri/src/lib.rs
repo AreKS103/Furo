@@ -127,6 +127,19 @@ fn diagnose_macos(pipeline: tauri::State<'_, Arc<FuroPipeline>>) -> String {
     // Executable path
     if let Ok(exe) = std::env::current_exe() {
         lines.push(format!("EXE: {}", exe.display()));
+
+        // Detect App Translocation – macOS runs apps from a temp dir when
+        // they haven't been moved to /Applications after download.
+        #[cfg(target_os = "macos")]
+        {
+            let path_str = exe.display().to_string();
+            if path_str.contains("AppTranslocation") || path_str.starts_with("/private/var/folders/") {
+                lines.push("APP_TRANSLOCATION: true ⚠️ Drag Furo to /Applications and relaunch".to_string());
+            } else {
+                lines.push("APP_TRANSLOCATION: false".to_string());
+            }
+        }
+
         if let Some(exe_dir) = exe.parent() {
             // Check sidecar binary exists
             let sidecar_name = if cfg!(target_os = "windows") { "whisper-server.exe" } else { "whisper-server" };
@@ -360,11 +373,12 @@ pub fn run() {
             .resizable(false)
             .focused(false);
 
-            // Transparent, shadowless window so the floating pill composites over the desktop.
-            // .transparent() / .shadow() are Windows-only on Tauri v2's WebviewWindowBuilder.
-            // macOS frameless windows are already transparent when the HTML body has no background.
+            // Transparent window so the pill composites over the desktop.
+            // Without transparent(true), the webview renders an opaque background
+            // even when CSS says `background: transparent`.
+            let builder = builder.transparent(true);
             #[cfg(target_os = "windows")]
-            let builder = builder.transparent(true).shadow(false);
+            let builder = builder.shadow(false);
 
             let _widget = builder.build()?;
 
