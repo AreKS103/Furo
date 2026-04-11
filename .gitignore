@@ -1,0 +1,31 @@
+# ── Dependencies ────────────────────────────────────────
+node_modules/
+
+# ── Build output ────────────────────────────────────────
+dist/
+src-tauri/target/
+
+# ── OS files ────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Editor ──────────────────────────────────────────────
+.vscode/*
+!.vscode/extensions.json
+*.swp
+*.swo
+
+# ── Environment ─────────────────────────────────────────
+.env
+.env.*
+
+# ── Large CUDA/GPU binaries (>100 MB — GitHub limit) ───
+# These are required at runtime for GPU-accelerated whisper.
+# Download separately: see README.md "GPU Setup" section.
+src-tauri/binaries/cublas64_13.dll
+src-tauri/binaries/cublasLt64_13.dll
+src-tauri/binaries/ggml-cuda.dll
+
+# ── Lock files managed by package manager ───────────────
+# Keep package-lock.json tracked (needed for npm ci)

@@ -1,0 +1,52 @@
+@import url("https://fonts.googleapis.com/css2?family=Noto+Sans:wght@400;500;600;700&family=Noto+Serif:wght@400;500;600;700&display=swap");
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Transparent body so the Tauri widget window (transparent: true)
+ * can float without a visible background. The Dashboard component
+ * provides its own opaque background.
+ */
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background: transparent;
+  font-family: "Noto Sans", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  color-scheme: light;
+}
+
+/* Force dark color-scheme for native form elements in dark mode */
+.dark {
+  color-scheme: dark;
+}
+
+/* Disable text selection and context menu in the native-like UI */
+body {
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+/* Allow text selection inside editable / transcript areas */
+.selectable {
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+/* Custom scrollbar (dark theme friendly) */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(128, 128, 128, 0.3);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(128, 128, 128, 0.5);
+}

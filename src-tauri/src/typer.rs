@@ -1,0 +1,27 @@
+//! Project Furo â€” Text Injection (cross-platform)
+//!
+//! Platform-specific implementations handle:
+//!   - Focus tracking and target capture
+//!   - Clipboard-based text injection via paste simulation
+//!   - Focus restoration to the target window
+
+#[cfg(target_os = "windows")]
+#[path = "typer_win.rs"]
+mod platform;
+
+#[cfg(target_os = "macos")]
+#[path = "typer_mac.rs"]
+mod platform;
+
+pub use platform::*;
+
+/// Captured target window info for text injection.
+///
+/// On Windows: `parent`/`child` are HWNDs (window handles).
+/// On macOS: `parent` is a pid_t (process ID), `child` equals `parent`.
+#[derive(Debug, Clone, Copy)]
+pub struct CapturedTarget {
+    pub parent: isize,
+    pub child: isize,
+}
+

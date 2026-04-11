@@ -1,0 +1,51 @@
+{
+  "$schema": "https://raw.githubusercontent.com/niceeee/niceeee.github.io/refs/heads/master/schema/tauri-v2/capabilities-schema.json",
+  "identifier": "default",
+  "description": "Permissions for Furo main + widget windows",
+  "windows": ["main", "widget"],
+  "permissions": [
+    "core:default",
+    "core:window:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-set-focus",
+    "core:window:allow-set-position",
+    "core:window:allow-set-size",
+    "core:window:allow-center",
+    "core:window:allow-close",
+    "core:event:default",
+    "store:default",
+    {
+      "identifier": "shell:allow-spawn",
+      "allow": [
+        {
+          "name": "binaries/whisper-server",
+          "sidecar": true,
+          "args": true
+        },
+        {
+          "name": "whisper-server",
+          "sidecar": true,
+          "args": true
+        }
+      ]
+    },
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "binaries/whisper-server",
+          "sidecar": true,
+          "args": true
+        },
+        {
+          "name": "whisper-server",
+          "sidecar": true,
+          "args": true
+        }
+      ]
+    },
+    "updater:default",
+    "process:allow-restart"
+  ]
+}

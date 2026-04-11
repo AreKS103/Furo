@@ -1,0 +1,62 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-config-schema/schema.json",
+  "productName": "Furo",
+  "version": "0.2.6",
+  "identifier": "com.furo.app",
+  "build": {
+    "frontendDist": "../dist",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Furo",
+        "width": 1000,
+        "height": 660,
+        "minWidth": 1000,
+        "minHeight": 600,
+        "center": true,
+        "resizable": true,
+        "decorations": true,
+        "visible": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": "all",
+    "externalBin": [
+      "binaries/whisper-server"
+    ],
+    "resources": {
+      "binaries/ggml.dll": "ggml.dll",
+      "binaries/ggml-base.dll": "ggml-base.dll",
+      "binaries/ggml-cpu.dll": "ggml-cpu.dll",
+      "binaries/ggml-cpu-x64.dll": "ggml-cpu-x64.dll",
+      "binaries/whisper.dll": "whisper.dll",
+      "binaries/libomp140.x86_64.dll": "libomp140.x86_64.dll"
+    },
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "createUpdaterArtifacts": "v1Compatible"
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDkzMDhEQjA3NTU0QkI5OTkKUldTWnVVdFZCOXNJazZNb29udTYxUHl0UmRybzlUMkNOanZ4bENUWXNEbllPbDJmeGhVWXdDSVQK",
+      "endpoints": [
+        "https://github.com/AreKS103/Furo/releases/latest/download/latest.json"
+      ]
+    }
+  }
+}
