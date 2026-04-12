@@ -66,21 +66,27 @@ mod cg_cursor {
 /// hover state changes.
 ///
 /// Uses two zones for hysteresis:
-///   • Activation zone: tight around the COLLAPSED pill (40×10 logical px,
-///     bottom-center of window). Cursor must actually reach the visible pill
-///     to start hover — prevents accidental activation from the larger expanded
-///     window.
+///   • Activation zone: tight around the COLLAPSED pill (visually 40×10 logical
+///     px via CSS transform, at the bottom-center of the always-80×20 window).
+///     Cursor must reach the pill area to start hover.
 ///   • Exit zone: current window bounds + small padding. Once hovering, the
-///     cursor can roam over the expanded window without dropping out.
+///     cursor can roam over the full expanded pill / popup without dropping out.
+///
+/// Note: the window is always 80×20 (or 80×62 with popup). Only popup open/close
+/// triggers a window resize — hover expand/collapse is pure CSS transform.
 #[cfg(target_os = "macos")]
 fn start_widget_hover_tracker(widget: tauri::WebviewWindow) {
     const POLL_MS: u64 = 50;
-    // X activation — exactly the collapsed pill width (40px). No padding.
+    // X activation — matches the collapsed visual pill width (40px = scaleX(0.5) of 80px).
     const PILL_HALF_W: f64 = 20.0;
-    // Y activation — anchored to window bottom (where the pill always lives).
-    // 10px pill + 4px above (user approaches from above) + 1px below for jitter.
+    // Y activation — anchored to window bottom (transform-origin: bottom center keeps
+    // the collapsed pill bottom flush with the window bottom).
+    // Collapsed pill height = 10px (scaleY(0.5) of 20px).
     const PILL_H: f64 = 10.0;
-    const Y_PAD_TOP: f64 = 4.0;
+    // Extra headroom above pill: user approaches from above.
+    // With always-80×20 window, add a bit more so activation triggers before
+    // the cursor reaches the lower half of the window.
+    const Y_PAD_TOP: f64 = 8.0;
     const Y_PAD_BOT: f64 = 1.0;
     // Exit zone — exact window bounds + 2px.
     const EXIT_PAD: f64 = 2.0;
@@ -844,8 +850,8 @@ pub fn run() {
                 .expect("no primary monitor found");
             let screen_size = monitor.size();
             let scale = monitor.scale_factor();
-            let widget_w: f64 = 40.0;
-            let widget_h: f64 = 10.0;
+            let widget_w: f64 = 80.0;
+            let widget_h: f64 = 20.0;
             let x = (screen_size.width as f64 / scale - widget_w) / 2.0;
             // macOS Dock occupies ~70-90px at bottom; use a larger offset so
             // the pill isn't hidden behind it.
