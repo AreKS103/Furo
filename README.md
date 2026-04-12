@@ -1,45 +1,10 @@
 # Project Furo
 
-A lightweight, local, and free alternative to Wispr Flow. Real-time voice-to-text dictation globally across your OS, powered by faster-whisper (CTranslate2) with Silero VAD filtering.
+A lightweight, local, and free alternative to Wispr Flow. Real time speech to text dictation, powered by faster-whisper (CTranslate2) with Silero VAD filtering.
 
-## Architecture
+## Setup
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│                        app.py (Orchestrator)                 │
-│                                                              │
-│  ┌──────────┐   hold key   ┌──────────┐   raw PCM           │
-│  │  pynput  │ ───────────► │ PyAudio  │ ──────────┐         │
-│  │  Hotkey  │   release    │ Recorder │           │         │
-│  │ Listener │ ─────┐      └──────────┘           ▼         │
-│  └──────────┘      │                        ┌─────────┐     │
-│                     │                        │ Silero  │     │
-│                     │                        │  VAD    │     │
-│                     │                        └────┬────┘     │
-│                     │                             │ speech   │
-│  ┌──────────┐      │      ┌──────────────┐       │ only     │
-│  │  pynput  │ ◄────┴───── │ faster-whisper│ ◄────┘         │
-│  │  Typer   │    text     │  (CTranslate2) │                │
-│  └──────────┘              └──────────────┘                 │
-└──────────────────────────────────────────────────────────────┘
-```
-
-### Module Breakdown
-
-| File | Purpose |
-|---|---|
-| `config.py` | All tunables: audio, VAD, model, hotkey, typing |
-| `audio.py` | PyAudio microphone capture with thread-safe buffering |
-| `vad.py` | Silero VAD (ONNX) — filters silence from audio stream |
-| `transcriber.py` | faster-whisper inference (CTranslate2 backend) |
-| `typer.py` | pynput keystroke simulation into the active window |
-| `app.py` | Main orchestrator — wires hotkey → record → VAD → transcribe → type |
-| `fine_tune.py` | **Isolated** LoRA fine-tuning script (separate venv) |
-| `convert_to_ct2.ps1` | PowerShell script to convert fine-tuned model to CT2 |
-
-## Part A: Setup
-
-### 1. Create Production Virtual Environment
+### 1. Create Virtual Environment
 
 ```powershell
 cd Furo
@@ -71,13 +36,8 @@ On first launch, faster-whisper auto-downloads `large-v3-turbo` from HuggingFace
 
 ### 4. Usage
 
-| Action | Key |
-|---|---|
-| **Start dictation** | Hold `F9` |
-| **Stop & transcribe** | Release `F9` |
-| **Exit** | Press `Escape` |
-
-Change the hotkey in `config.py` → `HOTKEY_NAME`.
+Configure your own hotkey. 
+Default is F9 for push-to-talk and F10 for hands-free-mode.
 
 ## Part B: Main Application
 
@@ -91,7 +51,7 @@ The app follows a strict pipeline:
 
 ### Why Silero VAD Matters
 
-Without VAD, Whisper hallucinates text during silence (e.g., repeating "[BLANK_AUDIO]", "Thank you.", or phantom sentences). Silero catches 100% of silence frames and typically reduces audio sent to the GPU by 30–70%, slashing inference time proportionally.
+Without VAD, Whisper hallucinates text during silence (e.g., repeating "[BLANK_AUDIO]", "Thank you."). Silero catches 100% of silence frames and typically reduces audio sent to the GPU by 30–70%, reducing inference time.
 
 ### Config Tuning
 
