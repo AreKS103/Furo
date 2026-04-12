@@ -12,7 +12,9 @@ use tauri::{AppHandle, Emitter};
 
 use crate::audio::{AudioRecorder, MicInfo};
 use crate::config;
-use crate::hotkey::{HotkeyCallbacks, HotkeyListener, REBIND_MODE_ACTIVE, WIN_IS_COMBO_MODIFIER};
+use crate::hotkey::{HotkeyCallbacks, HotkeyListener, REBIND_MODE_ACTIVE};
+#[cfg(target_os = "windows")]
+use crate::hotkey::WIN_IS_COMBO_MODIFIER;
 use crate::processor;
 use crate::settings::SettingsStore;
 use crate::sidecar::SidecarManager;
@@ -470,10 +472,14 @@ impl FuroPipeline {
         let hold_str = self.settings.get("hotkey_hold");
         let hf_str = self.settings.get("hotkey_handsfree");
 
-        // Update hook's Win-key suppression flag based on registered combos.
-        let win_in_hold = hold_str.split('+').any(|p| matches!(p.trim(), "win" | "cmd"));
-        let win_in_hf = hf_str.split('+').any(|p| matches!(p.trim(), "win" | "cmd"));
-        WIN_IS_COMBO_MODIFIER.store(win_in_hold || win_in_hf, Ordering::SeqCst);
+        // Windows only: update the Win-key suppression flag so the low-level
+        // hook can suppress Win→Start-menu while a Win-key combo is in use.
+        #[cfg(target_os = "windows")]
+        {
+            let win_in_hold = hold_str.split('+').any(|p| matches!(p.trim(), "win" | "cmd"));
+            let win_in_hf = hf_str.split('+').any(|p| matches!(p.trim(), "win" | "cmd"));
+            WIN_IS_COMBO_MODIFIER.store(win_in_hold || win_in_hf, Ordering::SeqCst);
+        }
 
         let p1 = Arc::clone(self);
         let p2 = Arc::clone(self);

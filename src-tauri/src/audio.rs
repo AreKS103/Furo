@@ -19,6 +19,10 @@ use crate::config;
 pub struct MicInfo {
     pub name: String,
     pub index: usize,
+    /// Connection type: "usb", "bluetooth", "builtin", "unknown"
+    pub interface_type: String,
+    /// Whether this is the system default input device.
+    pub is_default: bool,
 }
 
 /// Audio recorder using cpal. Captures raw PCM i16 at 16 kHz mono.
@@ -148,6 +152,35 @@ impl AudioRecorder {
                     return;
                 }
 
+                // On Windows, skip the InputProfile DSP chain (gain → highpass
+                // → adaptive noise gate). WASAPI delivers 16 kHz mono directly
+                // via negotiate_config, matching v0.2.24's original fast path.
+                // The adaptive noise gate zeroes low-energy chunks before the
+                // VAD sees them, creating artificial silence gaps that fragment
+                // the speech buffer and cause whisper to re-decode the same
+                // audio section repeatedly.
+                //
+                // Noise floor is still tracked for accurate volume metering.
+                let output = if cfg!(target_os = "windows") {
+                    // Update noise floor EMA (metering only, does not modify audio)
+                    let sum_sq: f64 = resampled.iter().map(|&s| (s as f64) * (s as f64)).sum();
+                    let rms = (sum_sq / resampled.len() as f64).sqrt() as f32;
+                    let db = if rms > 1.0 {
+                        20.0 * (rms / 32768.0_f32).log10()
+                    } else {
+                        -96.0_f32
+                    };
+                    {
+                        let mut nf = noise_floor.lock();
+                        if db < *nf + 3.0 {
+                            *nf = *nf * (1.0 - config::NOISE_FLOOR_ALPHA)
+                                + db * config::NOISE_FLOOR_ALPHA;
+                        }
+                    }
+                    resampled
+                } else {
+                    // macOS / other: full InputProfile DSP chain
+
                 // Apply input profile processing: gain → highpass → noise gate
                 let processed = {
                     let mut hp_in = hp_prev_in.lock();
@@ -172,7 +205,7 @@ impl AudioRecorder {
                 // of each recording. After warm-up, the threshold is set to
                 // max(profile_static_gate, noise_floor + ADAPTIVE_GATE_HEADROOM_DB)
                 // so it automatically raises in noisy environments.
-                let output = {
+                {
                     let sum_sq: f64 = processed.iter().map(|&s| (s as f64) * (s as f64)).sum();
                     let rms = (sum_sq / processed.len() as f64).sqrt() as f32;
                     let db = if rms > 1.0 {
@@ -215,6 +248,7 @@ impl AudioRecorder {
                     } else {
                         processed
                     }
+                }
                 };
 
                 frames.lock().push_back(output.clone());
@@ -320,9 +354,19 @@ impl AudioRecorder {
         self.recording.load(Ordering::Relaxed)
     }
 
-    /// List available input devices, filtered by exclude keywords.
+    /// List available input devices.
+    ///
+    /// Uses cpal 0.17's `DeviceDescription` for rich metadata (interface type,
+    /// name). Does NOT pre-check `supported_input_configs()` — some USB
+    /// headsets (e.g. Logitech Pro X) only report configs when actually opened.
     pub fn list_devices() -> Vec<MicInfo> {
         let host = cpal::default_host();
+
+        // Get the default device name for flagging
+        let default_name = host
+            .default_input_device()
+            .and_then(|d| d.description().ok().map(|desc| desc.name().to_string()));
+
         let devices = match host.input_devices() {
             Ok(d) => d,
             Err(e) => {
@@ -335,22 +379,24 @@ impl AudioRecorder {
         let mut seen_names = std::collections::HashSet::new();
 
         for (idx, device) in devices.enumerate() {
-            let name = match device.description() {
-                Ok(d) => d.name().to_string(),
+            let desc = match device.description() {
+                Ok(d) => d,
                 Err(_) => continue,
             };
 
-            // Check supported configs — skip devices that can't do input
-            if device.supported_input_configs().is_err() {
+            let name = desc.name().to_string();
+            if name.is_empty() {
                 continue;
             }
 
             let name_lower = name.to_lowercase();
 
+            // Only exclude genuine loopback/virtual mixer devices
             if config::MIC_EXCLUDE_KEYWORDS
                 .iter()
                 .any(|kw| name_lower.contains(kw))
             {
+                log::debug!("Excluding device '{}' (matched exclude keyword)", name);
                 continue;
             }
 
@@ -359,53 +405,106 @@ impl AudioRecorder {
             }
             seen_names.insert(name.clone());
 
-            mics.push(MicInfo { name, index: idx });
+            let interface_type = Self::interface_type_str(desc.interface_type());
+            let is_default = default_name.as_deref() == Some(&name);
+
+            log::info!(
+                "Found input device [{}]: '{}' (interface={}, default={})",
+                idx, name, interface_type, is_default
+            );
+
+            mics.push(MicInfo {
+                name,
+                index: idx,
+                interface_type,
+                is_default,
+            });
         }
 
         mics
     }
 
-    /// Negotiate a supported stream configuration for the device.
-    /// Prefers 16 kHz mono but falls back to the device's default config
-    /// (commonly 48 kHz on macOS) — we resample in the callback.
-    fn negotiate_config(device: &Device) -> Result<(StreamConfig, u32, u16, SampleFormat), String> {
-        let target_rate = config::AUDIO_RATE;
+    /// Map cpal InterfaceType enum to a simple string for the frontend.
+    fn interface_type_str(iface: cpal::device_description::InterfaceType) -> String {
+        use cpal::device_description::InterfaceType;
+        match iface {
+            InterfaceType::Usb => "usb".into(),
+            InterfaceType::Bluetooth => "bluetooth".into(),
+            InterfaceType::BuiltIn => "builtin".into(),
+            InterfaceType::Pci => "pci".into(),
+            InterfaceType::Virtual => "virtual".into(),
+            InterfaceType::Network => "network".into(),
+            _ => "unknown".into(),
+        }
+    }
 
-        // Try: exact 16 kHz mono i16 first
-        if let Ok(configs) = device.supported_input_configs() {
-            for cfg in configs {
-                if cfg.channels() == 1
-                    && cfg.min_sample_rate() <= target_rate
-                    && cfg.max_sample_rate() >= target_rate
-                    && cfg.sample_format() == SampleFormat::I16
-                {
-                    let sc = cfg.with_sample_rate(target_rate).config();
-                    return Ok((sc, config::AUDIO_RATE, 1, SampleFormat::I16));
-                }
-            }
+    /// Negotiate a supported stream configuration for the device.
+    ///
+    /// **Windows**: WASAPI shared-mode transparently handles sample rate/format
+    /// conversion in the audio engine, so we request 16 kHz mono I16 directly.
+    /// This avoids software resampling overhead in the callback and matches the
+    /// original fast path that achieved 0.5–1s pipeline latency.
+    ///
+    /// **macOS / other**: Many CoreAudio devices only support their native rate
+    /// (commonly 48 kHz). We accept whatever the device offers and resample to
+    /// 16 kHz mono in the callback.
+    #[allow(unused_variables)]
+    fn negotiate_config(device: &Device) -> Result<(StreamConfig, u32, u16, SampleFormat), String> {
+        // On Windows, request 16 kHz directly — WASAPI handles the conversion.
+        #[cfg(target_os = "windows")]
+        {
+            let direct_config = StreamConfig {
+                channels: config::AUDIO_CHANNELS,
+                sample_rate: config::AUDIO_RATE,
+                buffer_size: cpal::BufferSize::Fixed(config::AUDIO_CHUNK),
+            };
+            log::info!(
+                "Windows: requesting {}Hz {}ch I16 directly (WASAPI shared-mode resampling)",
+                config::AUDIO_RATE, config::AUDIO_CHANNELS
+            );
+            return Ok((direct_config, config::AUDIO_RATE, config::AUDIO_CHANNELS, SampleFormat::I16));
         }
 
-        // Fallback: use the device's default input config
-        let default_cfg = device
-            .default_input_config()
-            .map_err(|e| format!("Failed to get default input config: {}", e))?;
+        // Non-Windows: negotiate the best supported config
+        #[cfg(not(target_os = "windows"))]
+        {
+            let target_rate = config::AUDIO_RATE;
 
-        let rate = default_cfg.sample_rate();
-        let channels = default_cfg.channels();
-        let fmt = default_cfg.sample_format();
+            // Try: exact 16 kHz mono i16 first
+            if let Ok(configs) = device.supported_input_configs() {
+                for cfg in configs {
+                    if cfg.channels() == 1
+                        && cfg.min_sample_rate() <= target_rate
+                        && cfg.max_sample_rate() >= target_rate
+                        && cfg.sample_format() == SampleFormat::I16
+                    {
+                        let sc = cfg.with_sample_rate(target_rate).config();
+                        return Ok((sc, config::AUDIO_RATE, 1, SampleFormat::I16));
+                    }
+                }
+            }
 
-        // Build a StreamConfig from the default
-        let stream_config = StreamConfig {
-            channels,
-            sample_rate: default_cfg.sample_rate(),
-            buffer_size: cpal::BufferSize::Default,
-        };
+            // Fallback: use the device's default input config
+            let default_cfg = device
+                .default_input_config()
+                .map_err(|e| format!("Failed to get default input config: {}", e))?;
 
-        log::info!(
-            "Using device default config: {}Hz {}ch {:?} (will resample to {}Hz mono)",
-            rate, channels, fmt, config::AUDIO_RATE
-        );
-        Ok((stream_config, rate, channels, fmt))
+            let rate = default_cfg.sample_rate();
+            let channels = default_cfg.channels();
+            let fmt = default_cfg.sample_format();
+
+            let stream_config = StreamConfig {
+                channels,
+                sample_rate: default_cfg.sample_rate(),
+                buffer_size: cpal::BufferSize::Default,
+            };
+
+            log::info!(
+                "Using device default config: {}Hz {}ch {:?} (will resample to {}Hz mono)",
+                rate, channels, fmt, config::AUDIO_RATE
+            );
+            Ok((stream_config, rate, channels, fmt))
+        }
     }
 
     fn find_device_by_name(host: &cpal::Host, name: &str) -> Result<Device, String> {

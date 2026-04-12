@@ -25,7 +25,10 @@ pub use platform::HotkeyListener;
 pub(crate) static REBIND_MODE_ACTIVE: AtomicBool = AtomicBool::new(false);
 
 /// Set to `true` when Win is a modifier in any registered combo.
-/// Hook suppresses Win→Start-menu / Win+Space→language-switcher during hotkey use.
+/// Windows-only: suppresses Win→Start-menu / Win+Space→language-switcher
+/// in the low-level keyboard hook proc while a Win-key combo is active.
+/// Has no effect on macOS (Command key does not have an OS-level intercept).
+#[cfg(target_os = "windows")]
 pub(crate) static WIN_IS_COMBO_MODIFIER: AtomicBool = AtomicBool::new(false);
 
 // ── Hotkey event types
@@ -337,7 +340,7 @@ pub(super) fn hotkey_worker(
         // This ensures we detect activation/deactivation even during idle
         // periods (no key events flowing). Previously, the check was after
         // recv_timeout, so timeout → continue skipped it entirely.
-        let rebind_active = REBIND_MODE_ACTIVE.load(Ordering::Relaxed);
+        let rebind_active = REBIND_MODE_ACTIVE.load(Ordering::Acquire);
         if rebind_active && !was_rebind_active {
             if !pressed_keys.is_empty() || !active_modifiers.is_empty() {
                 log::info!(
@@ -362,6 +365,36 @@ pub(super) fn hotkey_worker(
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
         };
+
+        // ── Re-check rebind state immediately after waking from recv_timeout ──
+        // The cached `rebind_active` above was captured BEFORE the 500ms sleep.
+        // On Windows, if the user activates rebind mode and presses Win key
+        // faster than the recv_timeout cycle, the Win key event arrives in the
+        // channel while rebind_active is still false. By reloading here we ensure
+        // Win (and any other key) is correctly captured into rebind_modifiers
+        // rather than being misrouted through the normal hotkey-matching path.
+        let rebind_active = REBIND_MODE_ACTIVE.load(Ordering::Acquire);
+        if rebind_active && !was_rebind_active {
+            // Transition detected mid-timeout: clear stale state exactly as we
+            // do at the top of the loop, then mark the transition consumed so
+            // the top-of-loop check doesn't fire again next iteration.
+            if !pressed_keys.is_empty() || !active_modifiers.is_empty() {
+                log::info!(
+                    "[rebind] clearing stale state (mid-event detection) — \
+                     pressed_keys={:?}, active_modifiers={:?}",
+                    pressed_keys, active_modifiers
+                );
+            }
+            pressed_keys.clear();
+            active_modifiers.clear();
+            hold_active = false;
+            rebind_pressed.clear();
+            rebind_modifiers.clear();
+            rebind_trigger = None;
+            rebind_last_modifier = None;
+            was_rebind_active = true;
+            log::info!("[rebind] mode activated (detected after recv) — all state reset");
+        }
 
         match event {
             HotkeyEvent::KeyPress { vk, injected } => {

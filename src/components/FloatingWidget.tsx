@@ -33,12 +33,6 @@ const STORE_KEY = "dictations";
 const EASE_OUT = "cubic-bezier(0.25, 0.1, 0.25, 1)";
 const DURATION = "150ms";
 
-async function tauriShow() {
-  if (!IS_TAURI) return;
-  const { getCurrentWindow } = await import("@tauri-apps/api/window");
-  await getCurrentWindow().show();
-}
-
 /* ─── Audio Visualizer Bars ──────────────────────────────────────── */
 const BAR_COUNT = 10;
 
@@ -142,10 +136,10 @@ export function FloatingWidget() {
     return () => { unsub.then((fn) => fn()); };
   }, []);
 
-  // ── Show widget when recording starts ─────────────────────────
-  useEffect(() => {
-    if (isActive) tauriShow();
-  }, [isActive]);
+  // ── Widget is always visible (created with visible:true, never hidden) ──
+  // Do NOT call tauriShow() here — on Windows, Tauri's show() internally
+  // calls ShowWindow(SW_SHOW) which activates the widget and steals
+  // foreground focus from the user's active text field.
 
   // ── Window resize: popup needs 80×62, pill-only needs 80×20 ───
   // Resize is async — open: resize immediately (CSS animation has a small
@@ -170,7 +164,6 @@ export function FloatingWidget() {
       try {
         const { availableMonitors, cursorPosition, getCurrentWindow } =
           await import("@tauri-apps/api/window");
-        const { PhysicalPosition } = await import("@tauri-apps/api/dpi");
         const [cursor, monitors] = await Promise.all([cursorPosition(), availableMonitors()]);
         const monitor = monitors.find((m) => {
           const { x, y } = m.position;
@@ -188,12 +181,13 @@ export function FloatingWidget() {
         const win = getCurrentWindow();
         const curSize = await win.outerSize();
         const bottomOffset = IS_MAC ? 100 : 60;
-        await win.setPosition(
-          new PhysicalPosition(
-            mx + Math.round((mw - curSize.width) / 2),
-            my + mh - curSize.height - Math.round(bottomOffset * scale),
-          ),
-        );
+        // Use an invoke instead of win.setPosition() so the move goes through
+        // SetWindowPos(SWP_NOACTIVATE) on Windows — Tauri's setPosition() uses
+        // SetWindowPos without SWP_NOACTIVATE which activates the widget and
+        // steals keyboard focus from the user's active text field.
+        const px = mx + Math.round((mw - curSize.width) / 2);
+        const py = my + mh - curSize.height - Math.round(bottomOffset * scale);
+        await invoke("widget_reposition", { x: px, y: py });
       } catch { /* ignore in web dev mode */ }
     };
     const timer = setInterval(checkMonitor, 500);
@@ -247,13 +241,12 @@ export function FloatingWidget() {
     setShowPopup((p) => !p);
   };
 
-  // ── Box click: copy + re-paste ────────────────────────────────
+  // ── Box click: copy to clipboard only ─────────────────────────
   const handleBoxClick = async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
     if (!displayText) return;
     try { await navigator.clipboard.writeText(displayText); } catch { /* ignore */ }
-    if (IS_TAURI) invoke("repaste_last", { text: displayText }).catch(() => {});
     setCopied(true);
     setTimeout(() => setCopied(false), 1200);
   };

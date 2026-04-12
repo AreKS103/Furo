@@ -195,9 +195,33 @@ fn restore_focus(target_hwnd: isize) -> bool {
             return false;
         }
 
-        let our_tid = GetCurrentThreadId();
+        // ── Fast path ───────────────────────────────────────────────────────
+        // If the target window IS already the foreground, do NOT touch focus.
+        //
+        // Calling SetForegroundWindow / SetFocus on a window that is already
+        // active sends it an unexpected WM_SETFOCUS.  Browsers like Chrome
+        // handle that message by re-initialising their internal focus routing,
+        // which can move focus to the address bar or another chrome widget
+        // instead of preserving the text field the user was typing in.
+        //
+        // When the Furo widget never steals focus (WS_EX_NOACTIVATE + no
+        // ShowWindow(SW_SHOW)), the target app is continuously foreground and
+        // its text-field caret is intact.  SendInput → Ctrl+V will paste
+        // directly into the focused field without any explicit focus juggling.
         let fg_hwnd = GetForegroundWindow();
-        let fg_tid = if fg_hwnd.0 != std::ptr::null_mut() {
+        if fg_hwnd.0 == target.0 {
+            log::debug!(
+                "restore_focus: 0x{:X} is already foreground — skipping focus ops.",
+                target_hwnd
+            );
+            return true;
+        }
+
+        // ── Normal path — target is NOT the current foreground ──────────────
+        // Something else (another app, or the widget itself via a programmatic
+        // SetWindowPos) stole focus.  Bring the target back.
+        let our_tid = GetCurrentThreadId();
+        let fg_tid = if !fg_hwnd.0.is_null() {
             GetWindowThreadProcessId(fg_hwnd, None)
         } else {
             0

@@ -11,6 +11,8 @@ const IS_MAC = navigator.platform.toUpperCase().includes("MAC");
 interface Mic {
   name: string;
   index: number;
+  interface_type: string;
+  is_default: boolean;
 }
 
 interface FoundModel {
@@ -449,7 +451,7 @@ function SettingsPage({
   const [rebindingHold, setRebindingHold] = useState(false);
   const [rebindingHandsfree, setRebindingHandsfree] = useState(false);
   const [autostart, setAutostart] = useState(false);
-  const [language, setLanguage] = useState("en");
+  const [languages, setLanguages] = useState<string[]>(["en"]);
   const [soundEnabled, setSoundEnabled] = useState(true);
   const [soundVolume, setSoundVolume] = useState(5); // 0–100 integer, stored as 0.0–1.0
   const [appVersion, setAppVersion] = useState("");
@@ -467,7 +469,10 @@ function SettingsPage({
     if (settings.input_profile !== undefined) setInputProfile(settings.input_profile || "headset");
     if (settings.hotkey_hold !== undefined) setHoldHotkey(settings.hotkey_hold);
     if (settings.hotkey_handsfree !== undefined) setHandsfreeHotkey(settings.hotkey_handsfree);
-    if (settings.language !== undefined) setLanguage(settings.language);
+    if (settings.language !== undefined) {
+      const raw = settings.language;
+      setLanguages(raw ? raw.split(",").filter(Boolean) : ["en"]);
+    }
     if (settings.sound_enabled !== undefined) setSoundEnabled(settings.sound_enabled !== "false");
     if (settings.sound_volume !== undefined) {
       // Perceptual curve inverse: pct = sqrt(stored / 0.20) × 100
@@ -600,10 +605,21 @@ function SettingsPage({
               onChange={(val) => {
                 setSelectedMic(val);
                 saveSetting("microphone", val);
+                // Auto-select the best input profile for this device
+                const mic = mics.find((m) => m.name === val);
+                const suggested = mic ? (mic.interface_type === "builtin" ? "laptop" : "headset") : "headset";
+                setInputProfile(suggested);
+                saveSetting("input_profile", suggested);
               }}
               options={[
                 { value: "", label: "System Default" },
-                ...mics.map((m) => ({ value: m.name, label: m.name })),
+                ...mics.map((m) => {
+                  const badge = m.interface_type === "usb" ? " (USB)"
+                    : m.interface_type === "bluetooth" ? " (Bluetooth)"
+                    : m.interface_type === "builtin" ? " (Built-in)"
+                    : "";
+                  return { value: m.name, label: m.name + badge };
+                }),
               ]}
               className={inputCls + " cursor-pointer"}
             />
@@ -627,7 +643,7 @@ function SettingsPage({
               className={inputCls + " cursor-pointer"}
             />
             <p className="mt-1.5 text-[11px] text-warm-400 dark:text-zinc-500">
-              Laptop profile boosts gain and filters background noise for built-in microphones.
+              Auto-detected when changing devices. Laptop profile boosts gain and filters background noise.
             </p>
           </section>
 
@@ -636,20 +652,56 @@ function SettingsPage({
             <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-warm-400 dark:text-zinc-500">
               Language
             </label>
+            {languages.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-2">
+                {languages.map((code) => {
+                  const lang = WHISPER_LANGUAGES.find((l) => l.code === code);
+                  return (
+                    <span
+                      key={code}
+                      className="inline-flex items-center gap-1.5 rounded-lg bg-warm-100 px-3 py-1.5 text-sm font-medium text-warm-800 dark:bg-zinc-700 dark:text-zinc-100"
+                    >
+                      {lang?.name ?? code}
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = languages.filter((c) => c !== code);
+                          setLanguages(next);
+                          saveSetting("language", next.length === 0 ? "auto" : next.join(","));
+                        }}
+                        className="flex h-4 w-4 items-center justify-center rounded-full hover:bg-warm-200 dark:hover:bg-zinc-600"
+                        aria-label={`Remove ${lang?.name ?? code}`}
+                      >
+                        <svg width="8" height="8" viewBox="0 0 8 8" fill="none">
+                          <path d="M1 1l6 6M7 1L1 7" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                        </svg>
+                      </button>
+                    </span>
+                  );
+                })}
+              </div>
+            )}
             <CustomSelect
-              value={language}
+              value=""
               onChange={(val) => {
-                setLanguage(val);
-                saveSetting("language", val);
+                if (!val || languages.includes(val)) return;
+                const next = [...languages, val];
+                setLanguages(next);
+                saveSetting("language", next.join(","));
               }}
-              options={WHISPER_LANGUAGES.map((l) => ({
-                value: l.code,
-                label: l.name,
-              }))}
+              options={[
+                { value: "", label: languages.length === 0 ? "Select a language…" : "Add another language…" },
+                ...WHISPER_LANGUAGES.filter((l) => !languages.includes(l.code)).map((l) => ({
+                  value: l.code,
+                  label: l.name,
+                })),
+              ]}
               className={inputCls + " cursor-pointer"}
             />
             <p className="mt-1.5 text-[11px] text-warm-400 dark:text-zinc-500">
-              Transcription language. Use auto-detect for multilingual input.
+              {languages.length > 1
+                ? "Multiple languages selected — auto-detection is used."
+                : "Add multiple languages to enable auto-detection."}
             </p>
           </section>
 

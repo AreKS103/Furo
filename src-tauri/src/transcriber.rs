@@ -234,6 +234,7 @@ impl Transcriber {
         // We add 64 positions (~1.3s) of headroom so encoder isn't clipped.
         let n_samples = audio_f32.len();
         let audio_ctx = ((n_samples / 320) + 64).min(1500);
+        #[cfg(not(target_os = "windows"))]
         let audio_ctx_str = audio_ctx.to_string();
         log::info!("[perf] audio_ctx={} (covers {:.1}s of {:.2}s audio)",
             audio_ctx, audio_ctx as f64 * 320.0 / config::AUDIO_RATE as f64, duration_s);
@@ -248,8 +249,8 @@ impl Transcriber {
             .mime_str("audio/wav")
             .unwrap();
 
-        // Use empty string for auto-detect, otherwise use the language code
-        let lang_value = if language == "auto" { "" } else { language };
+        // Use empty string for auto-detect: explicit "auto", or multiple languages (comma-separated)
+        let lang_value = if language == "auto" || language.contains(',') { "" } else { language };
 
         let form = reqwest::blocking::multipart::Form::new()
             .part("file", file_part)
@@ -257,9 +258,19 @@ impl Transcriber {
             .text("language", lang_value.to_string())
             .text("response_format", "text")
             .text("prompt", config::INITIAL_PROMPT.to_string())
-            // Dynamic audio context — only process mel frames actually needed.
-            // Accepted as a per-request form field by whisper-server.
-            .text("audio_ctx", audio_ctx_str);
+            // Disable cross-segment text conditioning: when audio has a brief
+            // pause, whisper splits it into multiple decoder segments. Without
+            // this, each segment conditions on the previous segment's text,
+            // causing a feedback loop that produces repeated/hallucinated output.
+            // max_context=0 → n_max_text_ctx=0 → no carry-over between segments.
+            .text("max_context", "0");
+
+        // Dynamic audio context — only process mel frames actually needed.
+        // On macOS (CPU encoder) this gives ~3.5x speedup for short clips.
+        // On Windows (CUDA encoder) the GPU is already fast, and limiting
+        // audio_ctx can interact badly with segment detection — skip it.
+        #[cfg(not(target_os = "windows"))]
+        let form = form.text("audio_ctx", audio_ctx_str);
 
         let t_send = t0.elapsed();
         log::info!("[perf] encode+form: {:.1}ms", (t_send - t_dsp).as_secs_f64() * 1000.0);

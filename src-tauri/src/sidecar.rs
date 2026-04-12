@@ -96,11 +96,22 @@ impl SidecarManager {
 
         let port_str = config::WHISPER_SERVER_PORT.to_string();
 
-        // Use all available CPU cores for inference. On Intel Macs without
-        // Metal GPU, this makes a meaningful difference for large models.
-        let thread_count = std::thread::available_parallelism()
-            .map(|n| n.get().to_string())
-            .unwrap_or_else(|_| "4".to_string());
+        // Thread count for whisper.cpp inference.
+        //
+        // On Windows with CUDA: the encoder runs on GPU, so CPU threads are
+        // only used for the decoder. whisper.cpp's default is 4, and using all
+        // cores causes thread contention that degrades CUDA performance.
+        //
+        // On macOS without dedicated GPU (Intel Macs): the encoder runs
+        // entirely on CPU, so using all cores provides a meaningful speedup.
+        let thread_count = if cfg!(target_os = "windows") {
+            // Match whisper.cpp default — avoids CUDA thread contention.
+            "4".to_string()
+        } else {
+            std::thread::available_parallelism()
+                .map(|n| n.get().to_string())
+                .unwrap_or_else(|_| "4".to_string())
+        };
 
         let mut args = vec![
             "--model",
@@ -113,12 +124,16 @@ impl SidecarManager {
             "/v1/audio/transcriptions",
             "--threads",
             &thread_count,
-            // Optimize for speed: skip timestamp computation and use greedy
-            // decoding (1 candidate). suppress-nst removes [music]/[applause]
-            // hallucination tokens. Temperature fallback is kept enabled — it
-            // is the only mechanism that breaks repetition loops when the
-            // decoder gets stuck, and disabling it causes the 20x repeat bug.
-            "--no-timestamps",
+            // Greedy decoding with 1 candidate for speed. suppress-nst removes
+            // [music]/[applause] hallucination tokens. Temperature fallback is
+            // kept enabled — it is the only mechanism that breaks repetition
+            // loops when the decoder gets stuck.
+            //
+            // NOTE: Do NOT add --no-timestamps here. Timestamps provide timing
+            // anchors that the decoder uses to advance through the audio. When
+            // combined with max_context=0 (sent per-request), disabling them
+            // causes a feedback loop where each segment re-decodes the same
+            // audio portion, producing 8x+ repeated output.
             "--best-of", "1",
             "--beam-size", "1",
             "--suppress-nst",

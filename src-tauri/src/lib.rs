@@ -764,6 +764,8 @@ fn widget_hold_release(pipeline: tauri::State<'_, Arc<FuroPipeline>>) {
 
 /// Resize the widget window to an arbitrary logical size.
 /// The bottom-center stays pinned so the pill never jumps.
+/// On Windows uses SetWindowPos(SWP_NOACTIVATE) so the resize never
+/// steals keyboard focus from the user's active text field.
 #[tauri::command]
 fn widget_set_size(app: tauri::AppHandle, width: f64, height: f64) {
     let Some(win) = app.get_webview_window("widget") else { return };
@@ -783,6 +785,37 @@ fn widget_set_size(app: tauri::AppHandle, width: f64, height: f64) {
     let new_x = center_x - width / 2.0;
     let new_y = bottom_y - height;
 
+    // On Windows, use SetWindowPos with SWP_NOACTIVATE so the resize/move does
+    // NOT activate the widget window.  Tauri's set_size + set_position both call
+    // SetWindowPos without SWP_NOACTIVATE which activates the widget and steals
+    // keyboard focus from whatever the user was typing in.
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER,
+        };
+        if let Ok(hwnd_ptr) = win.hwnd() {
+            let hwnd = HWND(hwnd_ptr.0);
+            let x_phys = (new_x * scale).round() as i32;
+            let y_phys = (new_y * scale).round() as i32;
+            let w_phys = (width * scale).round() as i32;
+            let h_phys = (height * scale).round() as i32;
+            unsafe {
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    x_phys,
+                    y_phys,
+                    w_phys,
+                    h_phys,
+                    SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOOWNERZORDER,
+                );
+            }
+            return;
+        }
+    }
+
     use tauri::{LogicalPosition, LogicalSize};
     let _ = win.set_size(LogicalSize::new(width, height));
     let _ = win.set_position(LogicalPosition::new(new_x, new_y));
@@ -794,6 +827,40 @@ fn widget_set_size(app: tauri::AppHandle, width: f64, height: f64) {
 #[tauri::command]
 fn repaste_last(text: String, pipeline: tauri::State<'_, Arc<FuroPipeline>>) {
     pipeline.repaste(text);
+}
+
+/// Reposition the widget window by physical pixel coordinates without activating it.
+/// Called from the multi-monitor repositioning logic in FloatingWidget.tsx.
+/// On Windows uses SetWindowPos(SWP_NOACTIVATE) so the move never steals focus.
+#[tauri::command]
+fn widget_reposition(app: tauri::AppHandle, x: i32, y: i32) {
+    let Some(win) = app.get_webview_window("widget") else { return };
+
+    #[cfg(target_os = "windows")]
+    {
+        use windows::Win32::Foundation::HWND;
+        use windows::Win32::UI::WindowsAndMessaging::{
+            SetWindowPos, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOSIZE, SWP_NOZORDER,
+        };
+        if let Ok(hwnd_ptr) = win.hwnd() {
+            let hwnd = HWND(hwnd_ptr.0);
+            unsafe {
+                let _ = SetWindowPos(
+                    hwnd,
+                    None,
+                    x,
+                    y,
+                    0,
+                    0,
+                    SWP_NOACTIVATE | SWP_NOZORDER | SWP_NOSIZE | SWP_NOOWNERZORDER,
+                );
+            }
+            return;
+        }
+    }
+
+    use tauri::PhysicalPosition;
+    let _ = win.set_position(PhysicalPosition::new(x, y));
 }
 
 // ── Tray menu
@@ -835,6 +902,7 @@ pub fn run() {
             widget_hold_start,
             widget_hold_release,
             widget_set_size,
+            widget_reposition,
             repaste_last,
         ])
         .setup(|app| {
@@ -882,6 +950,32 @@ pub fn run() {
             let builder = builder.shadow(false);
 
             let _widget = builder.build()?;
+
+            // ── Windows: make the widget non-activating ──────────────
+            // Without this, ShowWindow(SW_SHOW) or clicking the widget
+            // steals foreground focus from the user's active text field.
+            // WS_EX_NOACTIVATE is the Win32 equivalent of macOS's
+            // NSWindowStyleMaskNonactivatingPanel.
+            #[cfg(target_os = "windows")]
+            {
+                use windows::Win32::Foundation::HWND;
+                use windows::Win32::UI::WindowsAndMessaging::{
+                    GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_NOACTIVATE,
+                };
+
+                if let Ok(hwnd_ptr) = _widget.hwnd() {
+                    let hwnd = HWND(hwnd_ptr.0);
+                    unsafe {
+                        let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+                        SetWindowLongPtrW(
+                            hwnd,
+                            GWL_EXSTYLE,
+                            ex_style | WS_EX_NOACTIVATE.0 as isize,
+                        );
+                    }
+                    log::info!("Widget HWND configured with WS_EX_NOACTIVATE.");
+                }
+            }
 
             // ── macOS: make the widget a non-activating floating panel ──
             // Without this, clicking the widget while another app is focused

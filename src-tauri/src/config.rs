@@ -104,19 +104,14 @@ pub const ADAPTIVE_GATE_HEADROOM_DB: f32 = 10.0;
 // Microphone Filtering
 
 /// Device names containing any of these keywords are excluded from the mic list.
+/// Keep this list tight — only loopback/mixer devices that are never real mics.
 pub const MIC_EXCLUDE_KEYWORDS: &[&str] = &[
     "stereo mix",
     "what u hear",
     "wave out",
     "loopback",
     "monitor of",
-    "virtual",
-    "video",
-    "camera",
-    "webcam",
     "screen capture",
-    "obs",
-    "voicemeeter",
 ];
 
 // Sidecar Health Check
@@ -167,5 +162,14 @@ pub fn input_profile_by_name(name: &str) -> InputProfile {
     match name {
         "laptop" => PROFILE_LAPTOP,
         _ => PROFILE_HEADSET,
+    }
+}
+
+/// Suggest a profile name based on device interface type string.
+/// "usb" / "bluetooth" → headset, "builtin" → laptop, others → headset.
+pub fn suggest_profile_for_interface(interface_type: &str) -> &'static str {
+    match interface_type {
+        "builtin" => "laptop",
+        _ => "headset",
     }
 }
