@@ -1,8 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { useFuro, type ServerState } from "../hooks/useFuro";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 
 const IS_TAURI = "__TAURI_INTERNALS__" in window;
+
+const STORE_FILE = "dictation-history.json";
+const STORE_KEY = "dictations";
 
 
 async function tauriShow() {
@@ -86,12 +90,41 @@ function AudioVisualizer({
 
 /* ═══════════════════════════════════════════════════════════════════ */
 export function FloatingWidget() {
-  const { state, volume } = useFuro();
+  const { state, volume, lastText } = useFuro();
   const isActive = state === "recording" || state === "processing";
   const [isHovered, setIsHovered] = useState(false);
-  const expanded = isActive || isHovered;
+  const [showPopup, setShowPopup] = useState(false);
+  const expanded = isActive || isHovered || showPopup;
   const lastMonitorIdRef = useRef<string>("");
   const isHoldingRef = useRef(false);
+  const [persistedText, setPersistedText] = useState("");
+
+  // The text to display: prefer the current session's lastText, fall back to persisted history.
+  const displayText = lastText || persistedText;
+
+  // Load last transcription from persistent store on mount
+  useEffect(() => {
+    if (!IS_TAURI) return;
+    (async () => {
+      try {
+        const { Store } = await import("@tauri-apps/plugin-store");
+        const store = await Store.load(STORE_FILE);
+        const saved = await store.get<{ id: string; text: string; timestamp: number }[]>(STORE_KEY);
+        if (saved && saved.length > 0) {
+          setPersistedText(saved[0].text);
+        }
+      } catch { /* store not available */ }
+    })();
+  }, []);
+
+  // Keep persisted text in sync when new transcriptions arrive
+  useEffect(() => {
+    if (!IS_TAURI) return;
+    const unsub = listen<{ text: string }>("furo://transcription", (event) => {
+      if (event.payload.text) setPersistedText(event.payload.text);
+    });
+    return () => { unsub.then((fn) => fn()); };
+  }, []);
 
   useEffect(() => {
     document.documentElement.classList.add("dark");
@@ -110,15 +143,20 @@ export function FloatingWidget() {
   // (stable hit zone) so resizing never affects hover detection.
   useEffect(() => {
     if (!IS_TAURI) return;
+    if (showPopup) {
+      // Popup overlays the pill at bottom-0, grows upward 100px
+      invoke("widget_set_size", { width: 80, height: 100 }).catch(() => {});
+      return;
+    }
     if (expanded) {
-      invoke("widget_set_expanded", { expanded: true }).catch(() => {});
+      invoke("widget_set_size", { width: 80, height: 20 }).catch(() => {});
       return;
     }
     const timer = setTimeout(() => {
-      invoke("widget_set_expanded", { expanded: false }).catch(() => {});
+      invoke("widget_set_size", { width: 40, height: 10 }).catch(() => {});
     }, 210);
     return () => clearTimeout(timer);
-  }, [expanded]);
+  }, [expanded, showPopup]);
 
   // Multi-monitor: reposition widget to bottom-center of whichever screen
   // the mouse cursor is on. Polls every 500ms via physical coordinates.
@@ -180,15 +218,24 @@ export function FloatingWidget() {
     return () => clearInterval(timer);
   }, []);
 
-  // ── Mouse-hold dictation: press and hold to record ──────────
-  const handleMouseDown = () => {
+  // ── Mouse-hold dictation: LEFT-click and hold to record ─────
+  const handleMouseDown = (e: React.MouseEvent) => {
+    if (e.button !== 0) return; // left click only
     isHoldingRef.current = true;
     invoke("widget_hold_start").catch(() => {});
   };
-  const handleMouseUp = () => {
+  const handleMouseUp = (e: React.MouseEvent) => {
+    if (e.button !== 0) return;
     if (!isHoldingRef.current) return;
     isHoldingRef.current = false;
     invoke("widget_hold_release").catch(() => {});
+  };
+
+  // ── Right-click: toggle last-transcription popup ──────────
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setShowPopup((v) => !v);
   };
 
   // On macOS, mouse events on transparent windows can be unreliable.
@@ -203,6 +250,7 @@ export function FloatingWidget() {
     // Small delay prevents flicker from macOS hit-test edge cases
     hoverTimeout.current = setTimeout(() => {
       setIsHovered(false);
+      setShowPopup(false);
       if (isHoldingRef.current) {
         isHoldingRef.current = false;
         invoke("widget_hold_release").catch(() => {});
@@ -212,29 +260,53 @@ export function FloatingWidget() {
 
   return (
     <div
-      className="fixed inset-0 flex items-center justify-center cursor-pointer"
+      className="fixed inset-0 cursor-pointer"
       onMouseEnter={handleEnter}
       onMouseLeave={handleLeave}
       onMouseDown={handleMouseDown}
       onMouseUp={handleMouseUp}
+      onContextMenu={handleContextMenu}
     >
+      {/* ── Popup: absolute at bottom-0, grows upward, covers the pill area */}
       <div
         className={`
-          flex items-center justify-center rounded-full
-          border shadow-lg shadow-black/30
+          absolute bottom-0 left-1/2 -translate-x-1/2 w-[80px] overflow-hidden rounded-lg
+          border border-white/30 shadow-lg shadow-black/30
           backdrop-blur-xl bg-black/80
-          transition-[width,height,opacity,border-color] duration-200 ease-[cubic-bezier(0.4,0,0.2,1)]
-          ${expanded
-            ? "w-[80px] h-[20px] border-white/40"
-            : "w-[40px] h-[10px] border-white/30 opacity-80"
+          transition-[height,opacity] duration-200 ease-[cubic-bezier(0.4,0,0.2,1)]
+          ${showPopup
+            ? "h-[100px] opacity-100"
+            : "h-0 opacity-0 pointer-events-none border-transparent shadow-none"
           }
         `}
       >
+        <div className="h-full overflow-y-auto p-[6px] scrollbar-none">
+          <p className="text-[8px] leading-[1.3] text-white/90 break-words select-text cursor-text">
+            {displayText || "No transcription yet."}
+          </p>
+        </div>
+      </div>
+
+      {/* ── Pill: absolute at bottom-0, z-10 so it floats on top of the popup */}
+      <div className="absolute inset-x-0 bottom-0 flex items-end justify-center z-10">
         <div
-          className="transition-opacity duration-200"
-          style={{ opacity: expanded ? (isActive ? 1 : 0.5) : 0 }}
+          className={`
+            flex items-center justify-center rounded-full
+            border shadow-lg shadow-black/30
+            backdrop-blur-xl bg-black/80
+            transition-[width,height,opacity,border-color] duration-200 ease-[cubic-bezier(0.4,0,0.2,1)]
+            ${expanded
+              ? "w-[80px] h-[20px] border-white/40"
+              : "w-[40px] h-[10px] border-white/30 opacity-80"
+            }
+          `}
         >
-          <AudioVisualizer volume={volume} state={state} />
+          <div
+            className="transition-opacity duration-200"
+            style={{ opacity: expanded ? (isActive ? 1 : 0.5) : 0 }}
+          >
+            <AudioVisualizer volume={volume} state={state} />
+          </div>
         </div>
       </div>
     </div>

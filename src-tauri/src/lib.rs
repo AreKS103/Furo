@@ -395,32 +395,29 @@ fn widget_hold_release(pipeline: tauri::State<'_, Arc<FuroPipeline>>) {
     pipeline.on_hold_release();
 }
 
-/// Resize the widget window to match the visual pill size.
-/// Collapsed = 40×10 (pill at scale-50), Expanded = 80×20 (pill at scale-100).
-/// Center stays pinned so the pill morphs in place.
+/// Resize the widget window to an arbitrary logical size.
+/// The bottom-center stays pinned so the pill never jumps.
 #[tauri::command]
-fn widget_set_expanded(app: tauri::AppHandle, expanded: bool) {
+fn widget_set_size(app: tauri::AppHandle, width: f64, height: f64) {
     let Some(win) = app.get_webview_window("widget") else { return };
     let Ok(scale) = win.scale_factor() else { return };
     let Ok(pos) = win.outer_position() else { return };
     let Ok(size) = win.outer_size() else { return };
 
-    let (new_w, new_h): (f64, f64) = if expanded { (80.0, 20.0) } else { (40.0, 10.0) };
-
-    // Convert physical→logical for anchor math
+    // Convert physical → logical for anchor math
     let cur_w = size.width as f64 / scale;
     let cur_h = size.height as f64 / scale;
     let cur_x = pos.x as f64 / scale;
     let cur_y = pos.y as f64 / scale;
 
-    // Keep center pinned so the pill morphs in place
+    // Pin bottom-center: pill stays at the bottom, popup grows upward
+    let bottom_y = cur_y + cur_h;
     let center_x = cur_x + cur_w / 2.0;
-    let center_y = cur_y + cur_h / 2.0;
-    let new_x = center_x - new_w / 2.0;
-    let new_y = center_y - new_h / 2.0;
+    let new_x = center_x - width / 2.0;
+    let new_y = bottom_y - height;
 
     use tauri::{LogicalPosition, LogicalSize};
-    let _ = win.set_size(LogicalSize::new(new_w, new_h));
+    let _ = win.set_size(LogicalSize::new(width, height));
     let _ = win.set_position(LogicalPosition::new(new_x, new_y));
 }
 
@@ -461,7 +458,7 @@ pub fn run() {
             set_rebind_mode,
             widget_hold_start,
             widget_hold_release,
-            widget_set_expanded,
+            widget_set_size,
         ])
         .setup(|app| {
             let settings = SettingsStore::new(None);

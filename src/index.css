@@ -50,3 +50,11 @@ body {
 ::-webkit-scrollbar-thumb:hover {
   background: rgba(128, 128, 128, 0.5);
 }
+
+/* Hide scrollbar entirely (widget popup) */
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-none {
+  scrollbar-width: none;
+}
