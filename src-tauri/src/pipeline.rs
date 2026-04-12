@@ -361,18 +361,38 @@ impl FuroPipeline {
         // Download Whisper model if missing
         log::info!("[pipeline] step 2/5: Whisper model download/check");
         self.emit_status("loading", "Checking Whisper model…");
-        let pipeline_whisper = Arc::clone(self);
-        let whisper_model_path = match Transcriber::ensure_model_downloaded(
-            &self.models_dir,
-            move |pct, msg| {
-                pipeline_whisper.emit_download_progress(pct, msg);
-            },
-        ) {
-            Ok(p) => p,
-            Err(e) => {
-                log::error!("Failed to download Whisper model: {}", e);
-                self.emit_error(&format!("Whisper download error: {}", e));
-                return;
+
+        // Check if the user selected a specific model in settings
+        let user_model = self.settings.get("whisper_model");
+        let user_model_path = if !user_model.is_empty() {
+            let p = std::path::PathBuf::from(&user_model);
+            if p.exists() {
+                log::info!("[pipeline] using user-selected model: {}", p.display());
+                Some(p)
+            } else {
+                log::warn!("[pipeline] user-selected model not found: {} — falling back to default", user_model);
+                None
+            }
+        } else {
+            None
+        };
+
+        let whisper_model_path = if let Some(p) = user_model_path {
+            p
+        } else {
+            let pipeline_whisper = Arc::clone(self);
+            match Transcriber::ensure_model_downloaded(
+                &self.models_dir,
+                move |pct, msg| {
+                    pipeline_whisper.emit_download_progress(pct, msg);
+                },
+            ) {
+                Ok(p) => p,
+                Err(e) => {
+                    log::error!("Failed to download Whisper model: {}", e);
+                    self.emit_error(&format!("Whisper download error: {}", e));
+                    return;
+                }
             }
         };
 
@@ -553,16 +573,23 @@ impl FuroPipeline {
         // Capture target window
         *self.captured_target.lock() = typer::capture_target();
 
-        // Reset VAD
-        if let Some(ref vad) = *self.vad.lock() {
+        // Start audio capture — read profile first so we can set VAD threshold
+        let mic_name = self.settings.get("microphone");
+        let profile_name = self.settings.get("input_profile");
+        let profile = config::input_profile_by_name(&profile_name);
+        log::info!("[pipeline] input profile: {:?} (gain={:.0}dB, hp={:.0}Hz, vad_thr={:.2}, vol_boost={:.1}x)",
+            profile_name, profile.input_gain_db, profile.pre_vad_highpass_hz, profile.vad_threshold, profile.volume_display_boost);
+
+        // Reset VAD and apply profile's threshold
+        if let Some(ref mut vad) = *self.vad.lock() {
             vad.reset();
+            let user_thr = self.settings.get("vad_threshold").parse::<f32>().ok();
+            // User's explicit vad_threshold setting takes precedence over profile
+            vad.set_threshold(user_thr.unwrap_or(profile.vad_threshold));
         }
 
         // Clear speech buffer
         self.speech_buffer.lock().clear();
-
-        // Start audio capture
-        let mic_name = self.settings.get("microphone");
 
         let speech_buf = Arc::clone(&self.speech_buffer);
         let vad_ref = Arc::clone(self);
@@ -572,6 +599,7 @@ impl FuroPipeline {
         let mut recorder = self.recorder.lock();
         if let Err(e) = recorder.start(
             &mic_name,
+            profile,
             // on_volume callback
             move |level| {
                 pipeline_vol.emit_volume(level as f64);
@@ -733,7 +761,21 @@ impl FuroPipeline {
             let target = self.captured_target.lock().clone();
             if let Some(ref target) = target {
                 std::thread::sleep(std::time::Duration::from_millis(20));
-                let success = typer::type_text(&text, target);
+                // Wrap in catch_unwind: with the objc `exception` feature, any
+                // NSException that escapes a msg_send! call in typer_mac.rs
+                // becomes a Rust panic. We catch it here so the pipeline thread
+                // stays alive and the user sees a friendly error instead of a
+                // fatal crash.
+                let success = std::panic::catch_unwind(
+                    std::panic::AssertUnwindSafe(|| typer::type_text(&text, target)),
+                )
+                .unwrap_or_else(|_| {
+                    log::error!(
+                        "[pipeline] panic in type_text (likely ObjC exception \
+                         from focus/text injection) — text is on clipboard"
+                    );
+                    false
+                });
                 if !success {
                     self.emit_error("Target window was closed — text copied to clipboard.");
                 }
@@ -778,6 +820,21 @@ impl FuroPipeline {
         if enabled {
             play_widget_sound(vol);
         }
+    }
+
+    /// Re-paste the given text into the last known external application.
+    /// Called when the user clicks the box (last-transcription popup on the widget).
+    /// Runs on a detached thread to avoid blocking the Tauri command thread.
+    pub fn repaste(self: &Arc<Self>, text: String) {
+        let captured = self.captured_target.lock().clone();
+        std::thread::spawn(move || {
+            if let Some(ref target) = captured {
+                std::thread::sleep(std::time::Duration::from_millis(80));
+                let _ = std::panic::catch_unwind(
+                    std::panic::AssertUnwindSafe(|| typer::type_text(&text, target)),
+                );
+            }
+        });
     }
 
     /// Gracefully shut down sidecar servers.

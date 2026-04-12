@@ -29,6 +29,360 @@ use crate::hotkey::REBIND_MODE_ACTIVE;
 
 use tauri_plugin_autostart::MacosLauncher;
 
+// ── macOS: CoreGraphics cursor position for widget hover tracking ─────────
+// WKWebView does not receive mousemove events when another application is the
+// key window. DOM onMouseEnter/Leave are therefore dead unless Furo is
+// frontmost. The workaround is a Rust polling thread that checks the cursor
+// position via CoreGraphics every 50 ms and emits Tauri `widget-hover` events
+// to the widget — the same approach used by system HUDs like Wispr Flow.
+#[cfg(target_os = "macos")]
+mod cg_cursor {
+    use std::ffi::c_void;
+
+    /// A 2-D point in CoreGraphics global display coordinates.
+    /// Origin is at the top-left corner of the primary screen;
+    /// coordinates are in logical points (same unit iOS/macOS use in APIs).
+    #[repr(C)]
+    #[derive(Copy, Clone, Default)]
+    pub struct CGPoint {
+        pub x: f64,
+        pub y: f64,
+    }
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        /// Create a CoreGraphics event. Called with a NULL source returns an
+        /// event whose `location` field reflects the current cursor position.
+        pub fn CGEventCreate(source: *const c_void) -> *mut c_void;
+        /// Return the cursor location encoded in a CG event.
+        pub fn CGEventGetLocation(event: *mut c_void) -> CGPoint;
+        /// Release a CoreFoundation object.
+        pub fn CFRelease(cf: *const c_void);
+    }
+}
+
+/// macOS only: spawn a background thread that polls the cursor position every
+/// 50 ms and emits `widget-hover` (bool) into the widget WebView whenever the
+/// hover state changes.
+///
+/// Uses two zones for hysteresis:
+///   • Activation zone: tight around the COLLAPSED pill (40×10 logical px,
+///     bottom-center of window). Cursor must actually reach the visible pill
+///     to start hover — prevents accidental activation from the larger expanded
+///     window.
+///   • Exit zone: current window bounds + small padding. Once hovering, the
+///     cursor can roam over the expanded window without dropping out.
+#[cfg(target_os = "macos")]
+fn start_widget_hover_tracker(widget: tauri::WebviewWindow) {
+    const POLL_MS: u64 = 50;
+    // X activation — exactly the collapsed pill width (40px). No padding.
+    const PILL_HALF_W: f64 = 20.0;
+    // Y activation — anchored to window bottom (where the pill always lives).
+    // 10px pill + 4px above (user approaches from above) + 1px below for jitter.
+    const PILL_H: f64 = 10.0;
+    const Y_PAD_TOP: f64 = 4.0;
+    const Y_PAD_BOT: f64 = 1.0;
+    // Exit zone — exact window bounds + 2px.
+    const EXIT_PAD: f64 = 2.0;
+
+    std::thread::Builder::new()
+        .name("furo-widget-hover".into())
+        .spawn(move || {
+            let mut was_hovering = false;
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
+
+                // Query the current cursor position in CoreGraphics global
+                // display coords (logical points, top-left origin, Y down).
+                let cursor = unsafe {
+                    use cg_cursor::*;
+                    let ev = CGEventCreate(std::ptr::null());
+                    if ev.is_null() {
+                        continue;
+                    }
+                    let pt = CGEventGetLocation(ev);
+                    CFRelease(ev);
+                    pt
+                };
+
+                // Fetch widget frame. Returns Err when the window is closed.
+                let (pos, size, scale) = match (
+                    widget.outer_position(),
+                    widget.outer_size(),
+                    widget.scale_factor(),
+                ) {
+                    (Ok(p), Ok(s), Ok(sc)) => (p, s, sc),
+                    _ => break, // window gone — exit thread
+                };
+
+                // Convert physical window frame to logical points.
+                let lx = pos.x as f64 / scale;
+                let ly = pos.y as f64 / scale;
+                let lw = size.width as f64 / scale;
+                let lh = size.height as f64 / scale;
+
+                // Activation: exact collapsed pill width in X (no padding),
+                // and a small asymmetric band in Y anchored to the window
+                // bottom (where the pill always sits). Extra headroom above
+                // the pill is necessary because 50ms polling can miss a 10px
+                // target if the cursor moves fast — but the user always
+                // approaches from above, so only upward tolerance is added.
+                let center_x = lx + lw / 2.0;
+                let bottom = ly + lh; // stable: widget_set_size pins bottom edge
+                let in_activation =
+                    (cursor.x - center_x).abs() <= PILL_HALF_W
+                        && cursor.y >= bottom - PILL_H - Y_PAD_TOP
+                        && cursor.y <= bottom + Y_PAD_BOT;
+
+                // Exit: current window bounds + 2px jitter margin.
+                // When expanded (80×20 or 80×62) this naturally covers the
+                // full expanded pill and popup area.
+                let in_exit =
+                    cursor.x >= lx - EXIT_PAD
+                        && cursor.x <= lx + lw + EXIT_PAD
+                        && cursor.y >= ly - EXIT_PAD
+                        && cursor.y <= ly + lh + EXIT_PAD;
+
+                let is_hovering = if was_hovering { in_exit } else { in_activation };
+
+                if is_hovering != was_hovering {
+                    was_hovering = is_hovering;
+                    let _ = widget.emit("widget-hover", is_hovering);
+                }
+            }
+            log::info!("Widget hover tracker exited.");
+        })
+        .ok();
+}
+
+// ── Fullscreen detection ──────────────────────────────────────────────────
+// Polls every 500 ms to detect whether any external application is using the
+// full screen (browser fullscreen, VLC, Windows Video Player, YouTube, etc.).
+// Emits `widget-fullscreen` (bool) so the widget can fade out gracefully.
+//
+// macOS implementation uses CGWindowListCopyWindowInfo to check if any
+// non-Furo, normal-level window fills the main display's logical resolution.
+//
+// Windows implementation uses GetForegroundWindow + GetMonitorInfo to check
+// if the foreground window exactly covers its monitor.
+
+/// macOS: FFI for window-list-based fullscreen detection.
+#[cfg(target_os = "macos")]
+mod cg_fullscreen {
+    use std::ffi::c_void;
+
+    /// A CoreGraphics rectangle (logical points).
+    #[repr(C)]
+    #[derive(Clone, Copy, Default, Debug)]
+    pub struct CGRect {
+        pub x: f64,
+        pub y: f64,
+        pub width: f64,
+        pub height: f64,
+    }
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        /// Returns CFArrayRef of window dicts (on-screen, excluding desktop elements).
+        pub fn CGWindowListCopyWindowInfo(opts: u32, relative_to: u32) -> *mut c_void;
+        /// Returns the display ID of the primary display.
+        pub fn CGMainDisplayID() -> u32;
+        /// Returns the logical bounding rect of `display` in global display coords.
+        /// Available since macOS 10.3 — simpler than querying CGDisplayMode.
+        pub fn CGDisplayBounds(display: u32) -> CGRect;
+        /// Parses a `kCGWindowBounds` CFDictionary into a CGRect (logical points).
+        pub fn CGRectMakeWithDictionaryRepresentation(
+            dict: *const c_void,
+            rect: *mut CGRect,
+        ) -> bool;
+        pub fn CFRelease(cf: *const c_void);
+    }
+
+    #[link(name = "CoreFoundation", kind = "framework")]
+    extern "C" {
+        pub fn CFArrayGetCount(arr: *const c_void) -> isize;
+        pub fn CFArrayGetValueAtIndex(arr: *const c_void, idx: isize) -> *const c_void;
+    }
+}
+
+/// macOS: returns true if any non-Furo window currently fills the main display.
+#[cfg(target_os = "macos")]
+fn check_fullscreen_active(own_pid: i32) -> bool {
+    use std::ffi::{c_char, c_void};
+    use cg_fullscreen::*;
+    use objc::{class, msg_send, sel, sel_impl};
+
+    // kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements
+    const OPTS: u32 = 1 | 16;
+
+    unsafe {
+        // Get logical bounds of the primary display via CGDisplayBounds.
+        // Available since macOS 10.3; no separate mode query needed.
+        let display_id = CGMainDisplayID();
+        let screen_rect = CGDisplayBounds(display_id);
+        let screen_w = screen_rect.width;
+        let screen_h = screen_rect.height;
+
+        if screen_w < 1.0 || screen_h < 1.0 {
+            return false;
+        }
+
+        let arr = CGWindowListCopyWindowInfo(OPTS, 0 /* kCGNullWindowID */);
+        if arr.is_null() {
+            return false;
+        }
+
+        let count = CFArrayGetCount(arr);
+        let mut found_fullscreen = false;
+
+        // NSString key creation and NSDictionary lookups use ObjC → need a pool.
+        let pool: *mut objc::runtime::Object =
+            msg_send![class!(NSAutoreleasePool), new];
+
+        'outer: for i in 0..count {
+            let dict = CFArrayGetValueAtIndex(arr, i) as *mut objc::runtime::Object;
+            if dict.is_null() {
+                continue;
+            }
+
+            // ── Skip our own process's windows ──────────────────
+            let key_pid: *mut objc::runtime::Object = {
+                let s = b"kCGWindowOwnerPID\0";
+                msg_send![class!(NSString), stringWithUTF8String: s.as_ptr() as *const c_char]
+            };
+            let pid_obj: *mut objc::runtime::Object =
+                msg_send![dict, objectForKey: key_pid];
+            if !pid_obj.is_null() {
+                let pid: i32 = msg_send![pid_obj, intValue];
+                if pid == own_pid {
+                    continue;
+                }
+            }
+
+            // ── Only normal-level windows (layer 0) ─────────────
+            // Fullscreen apps and standard windows are both at layer 0.
+            let key_layer: *mut objc::runtime::Object = {
+                let s = b"kCGWindowLayer\0";
+                msg_send![class!(NSString), stringWithUTF8String: s.as_ptr() as *const c_char]
+            };
+            let layer_obj: *mut objc::runtime::Object =
+                msg_send![dict, objectForKey: key_layer];
+            if !layer_obj.is_null() {
+                let layer: i32 = msg_send![layer_obj, intValue];
+                if layer != 0 {
+                    continue;
+                }
+            }
+
+            // ── Parse window bounds ──────────────────────────────
+            let key_bounds: *mut objc::runtime::Object = {
+                let s = b"kCGWindowBounds\0";
+                msg_send![class!(NSString), stringWithUTF8String: s.as_ptr() as *const c_char]
+            };
+            let bounds_obj: *mut objc::runtime::Object =
+                msg_send![dict, objectForKey: key_bounds];
+            if bounds_obj.is_null() {
+                continue;
+            }
+
+            let mut rect = CGRect::default();
+            let ok: bool = CGRectMakeWithDictionaryRepresentation(
+                bounds_obj as *const c_void,
+                &mut rect,
+            );
+            if !ok {
+                continue;
+            }
+
+            // ── Fullscreen if window fills the display (±2pt tolerance) ──
+            if rect.width >= screen_w - 2.0 && rect.height >= screen_h - 2.0 {
+                found_fullscreen = true;
+                break 'outer;
+            }
+        }
+
+        let () = msg_send![pool, drain];
+        CFRelease(arr);
+        found_fullscreen
+    }
+}
+
+/// Windows: returns true if the foreground window fills its entire monitor.
+#[cfg(target_os = "windows")]
+fn check_fullscreen_active() -> bool {
+    use windows::Win32::Foundation::RECT;
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
+    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowRect};
+
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.0.is_null() {
+            return false;
+        }
+
+        let mut wr = RECT::default();
+        if GetWindowRect(hwnd, &mut wr).is_err() {
+            return false;
+        }
+
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        let mut mi = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(monitor, &mut mi).as_bool() {
+            return false;
+        }
+
+        let mr = mi.rcMonitor;
+        // Fullscreen: window rect equals monitor rect exactly.
+        // Also require minimum monitor-sized dimensions to filter out tiny windows.
+        let w = wr.right - wr.left;
+        let h = wr.bottom - wr.top;
+        w >= 640
+            && h >= 480
+            && wr.left == mr.left
+            && wr.top == mr.top
+            && wr.right == mr.right
+            && wr.bottom == mr.bottom
+    }
+}
+
+/// Cross-platform: spawn a background thread that polls for fullscreen state
+/// every 500 ms and emits `widget-fullscreen` (bool) into the widget WebView.
+fn start_fullscreen_tracker(widget: tauri::WebviewWindow) {
+    const POLL_MS: u64 = 500;
+
+    std::thread::Builder::new()
+        .name("furo-fullscreen".into())
+        .spawn(move || {
+            #[cfg(target_os = "macos")]
+            let own_pid = std::process::id() as i32;
+
+            let mut was_fullscreen = false;
+            loop {
+                std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
+
+                #[cfg(target_os = "macos")]
+                let is_fs = check_fullscreen_active(own_pid);
+
+                #[cfg(target_os = "windows")]
+                let is_fs = check_fullscreen_active();
+
+                #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+                let is_fs = false;
+
+                if is_fs != was_fullscreen {
+                    was_fullscreen = is_fs;
+                    let _ = widget.emit("widget-fullscreen", is_fs);
+                }
+            }
+        })
+        .ok();
+}
+
 // ── Tauri commands
 
 #[tauri::command]
@@ -112,6 +466,13 @@ fn scan_whisper_models(pipeline: tauri::State<'_, Arc<FuroPipeline>>) -> Vec<Fou
 fn set_rebind_mode(active: bool) {
     REBIND_MODE_ACTIVE.store(active, std::sync::atomic::Ordering::SeqCst);
     log::info!("Rebind mode: {}", active);
+}
+
+/// Retry starting the hotkey listener after the user grants Accessibility
+/// permission. Avoids requiring a full app restart.
+#[tauri::command]
+fn retry_hotkey_listener(pipeline: tauri::State<'_, Arc<FuroPipeline>>) {
+    pipeline.start_hotkey_listener();
 }
 
 /// macOS diagnostic command — gathers system state for remote debugging.
@@ -421,6 +782,14 @@ fn widget_set_size(app: tauri::AppHandle, width: f64, height: f64) {
     let _ = win.set_position(LogicalPosition::new(new_x, new_y));
 }
 
+/// Re-paste the last transcription text (from box click).
+/// Writes `text` to the clipboard and sends Cmd+V (macOS) / Ctrl+V (Windows)
+/// to the last known external application.
+#[tauri::command]
+fn repaste_last(text: String, pipeline: tauri::State<'_, Arc<FuroPipeline>>) {
+    pipeline.repaste(text);
+}
+
 // ── Tray menu
 
 fn build_tray_menu(app: &tauri::App) -> Result<tauri::menu::Menu<tauri::Wry>, Box<dyn std::error::Error>> {
@@ -456,9 +825,11 @@ pub fn run() {
             preview_sound,
             scan_whisper_models,
             set_rebind_mode,
+            retry_hotkey_listener,
             widget_hold_start,
             widget_hold_release,
             widget_set_size,
+            repaste_last,
         ])
         .setup(|app| {
             let settings = SettingsStore::new(None);
@@ -494,7 +865,8 @@ pub fn run() {
             .visible(true)
             .skip_taskbar(true)
             .resizable(false)
-            .focused(false);
+            .focused(false)
+            .accept_first_mouse(true);
 
             // Transparent window so the pill composites over the desktop.
             // Without transparent(true), the webview renders an opaque background
@@ -504,6 +876,79 @@ pub fn run() {
             let builder = builder.shadow(false);
 
             let _widget = builder.build()?;
+
+            // ── macOS: make the widget a non-activating floating panel ──
+            // Without this, clicking the widget while another app is focused
+            // first activates the Tauri app (stealing focus), requiring a
+            // second click to actually trigger mouseDown in the WebView.
+            // By setting NSWindowStyleMaskNonactivatingPanel and preventing
+            // the window from becoming key, clicks go straight through to
+            // the WebView without disturbing the user's active app.
+            #[cfg(target_os = "macos")]
+            {
+                use objc::runtime::{Object, NO};
+                use objc::{class, msg_send, sel, sel_impl};
+
+                if let Ok(ns_window_ptr) = _widget.ns_window() {
+                    let ns_window = ns_window_ptr as *mut Object;
+                    unsafe {
+                        // NSFloatingWindowLevel (CGWindowLevelForKey(3)) = 3
+                        // keeps widget above normal windows but below alerts.
+                        let _: () = msg_send![ns_window, setLevel: 3i64];
+
+                        // Don't hide when the app is deactivated — the widget
+                        // must remain visible while the user works in another app.
+                        let _: () = msg_send![ns_window, setHidesOnDeactivate: NO];
+
+                        // NSWindowCollectionBehavior:
+                        //   canJoinAllSpaces (1 << 0) = 1
+                        //   stationary      (1 << 4) = 16
+                        //   fullScreenAuxiliary (1 << 8) = 256
+                        // This keeps the widget on all desktops/spaces.
+                        let behavior: u64 = 1 | 16 | 256;
+                        let _: () = msg_send![ns_window, setCollectionBehavior: behavior];
+
+                        // Make the window truly invisible: clear background + no shadow.
+                        // Without this the NSWindow draws a faint rect around the webview.
+                        let clear: *mut Object = msg_send![class!(NSColor), clearColor];
+                        let _: () = msg_send![ns_window, setBackgroundColor: clear];
+                        let _: () = msg_send![ns_window, setHasShadow: NO];
+                        let _: () = msg_send![ns_window, setOpaque: NO];
+
+                        // NSWindowStyleMask: add nonactivatingPanel bit (1 << 7 = 128)
+                        // so clicking the widget does NOT activate the Tauri app.
+                        let current_mask: u64 = msg_send![ns_window, styleMask];
+                        let _: () = msg_send![ns_window, setStyleMask: current_mask | 128u64];
+
+                        // If this is actually an NSPanel (some Tauri versions
+                        // create one for borderless windows), prevent it from
+                        // becoming the key window on click.
+                        let responds: bool = msg_send![
+                            ns_window,
+                            respondsToSelector: sel!(setBecomesKeyOnlyIfNeeded:)
+                        ];
+                        if responds {
+                            let _: () = msg_send![
+                                ns_window,
+                                setBecomesKeyOnlyIfNeeded: objc::runtime::YES
+                            ];
+                            log::info!("Widget is NSPanel — setBecomesKeyOnlyIfNeeded:YES applied.");
+                        }
+                    }
+                    log::info!("Widget NSWindow configured as non-activating floating panel.");
+                }
+            }
+
+            // macOS: DOM hover events (onMouseEnter/Leave) are suppressed by
+            // the OS whenever another application is the key window — the
+            // WKWebView simply never receives mousemove. Start a native
+            // polling thread that emits `widget-hover` Tauri events instead.
+            #[cfg(target_os = "macos")]
+            start_widget_hover_tracker(_widget.clone());
+
+            // All platforms: poll for fullscreen state and fade the widget
+            // when the user watches a video (YouTube, VLC, system viewer, etc.).
+            start_fullscreen_tracker(_widget.clone());
 
             let tray_menu = build_tray_menu(app)?;
 

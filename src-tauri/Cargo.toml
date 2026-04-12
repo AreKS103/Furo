@@ -1,6 +1,6 @@
 [package]
 name = "furo"
-version = "0.2.32"
+version = "0.2.33"
 edition = "2021"
 
 [lib]
@@ -14,7 +14,6 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = ["tray-icon", "macos-private-api"] }
 tauri-plugin-store = "2"
 tauri-plugin-shell = "2"
-arboard = "3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
@@ -53,12 +52,16 @@ tauri-plugin-process = "2"
 lto = true
 codegen-units = 1
 opt-level = "s"
+# NOTE: panic = "abort" is intentionally NOT set here. We need unwind semantics
+# so that std::panic::catch_unwind can intercept panics originating from ObjC
+# exceptions (which the objc `exception` feature converts to Rust panics).
+# Without this, any NSException that escapes a msg_send! call aborts the process.
 strip = true
-panic = "abort"
 
 # ── Platform-specific dependencies ──────────────────────────────────────────
 
 [target.'cfg(target_os = "windows")'.dependencies]
+arboard = "3"
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",
@@ -66,10 +69,12 @@ windows = { version = "0.58", features = [
     "Win32_UI_Accessibility",
     "Win32_System_Threading",
     "Win32_System_LibraryLoader",
+    "Win32_Graphics_Gdi",
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
-objc = "0.2"
+objc = { version = "0.2", features = ["exception"] }
+libc = "0.2"
 
 # ONNX Runtime for Silero VAD — prebuilt binaries not available for x86_64 macOS
 # (ONNX Runtime dropped x86_64-apple-darwin as of 1.24.1).

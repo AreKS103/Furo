@@ -4,10 +4,41 @@ import { useHistory, type DictationEntry, type CumulativeStats } from "../hooks/
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
+import CustomSelect from "./CustomSelect";
+
+const IS_MAC = navigator.platform.toUpperCase().includes("MAC");
 
 interface Mic {
   name: string;
   index: number;
+}
+
+interface FoundModel {
+  path: string;
+  label: string;
+  size_bytes: number;
+}
+
+/** Display a hotkey combo string with platform-correct key names.
+ *  Stored combos use Windows canonical names ("win", "alt", "ctrl", "shift").
+ *  On macOS we show ⌘/⌥/⌃/⇧ symbols instead. */
+function formatHotkey(combo: string): string {
+  if (!combo) return combo;
+  const parts = combo.split("+");
+  const mapped = parts.map((p) => {
+    const lower = p.trim().toLowerCase();
+    if (IS_MAC) {
+      switch (lower) {
+        case "win": case "cmd": return "⌘";
+        case "alt": case "option": return "⌥";
+        case "ctrl": return "⌃";
+        case "shift": return "⇧";
+        default: return p.trim();
+      }
+    }
+    return p.trim();
+  });
+  return mapped.join(" + ").toUpperCase();
 }
 
 interface DashboardProps {
@@ -281,8 +312,8 @@ function HomePage({
   };
 
   const groups = groupByDate(entries);
-  const holdLabel = holdHotkey ? holdHotkey.replace(/\+/g, " + ").toUpperCase() : "F9";
-  const hfLabel = handsfreeHotkey ? handsfreeHotkey.replace(/\+/g, " + ").toUpperCase() : "F10";
+  const holdLabel = formatHotkey(holdHotkey || "F9");
+  const hfLabel = formatHotkey(handsfreeHotkey || "F10");
 
   return (
     <div className="flex-1 overflow-y-auto">
@@ -410,6 +441,9 @@ function SettingsPage({
   const { settings } = useFuro();
   const [mics, setMics] = useState<Mic[]>([]);
   const [selectedMic, setSelectedMic] = useState("");
+  const [models, setModels] = useState<FoundModel[]>([]);
+  const [selectedModel, setSelectedModel] = useState("");
+  const [inputProfile, setInputProfile] = useState("headset");
   const [holdHotkey, setHoldHotkey] = useState("");
   const [handsfreeHotkey, setHandsfreeHotkey] = useState("");
   const [rebindingHold, setRebindingHold] = useState(false);
@@ -429,6 +463,8 @@ function SettingsPage({
 
   useEffect(() => {
     if (settings.microphone !== undefined) setSelectedMic(settings.microphone);
+    if (settings.whisper_model !== undefined) setSelectedModel(settings.whisper_model);
+    if (settings.input_profile !== undefined) setInputProfile(settings.input_profile || "headset");
     if (settings.hotkey_hold !== undefined) setHoldHotkey(settings.hotkey_hold);
     if (settings.hotkey_handsfree !== undefined) setHandsfreeHotkey(settings.hotkey_handsfree);
     if (settings.language !== undefined) setLanguage(settings.language);
@@ -443,6 +479,7 @@ function SettingsPage({
 
   useEffect(() => {
     invoke<Mic[]>("list_microphones").then((d) => setMics(d ?? [])).catch((e) => console.warn("[settings] list mics:", e));
+    invoke<FoundModel[]>("scan_whisper_models").then((d) => setModels(d ?? [])).catch((e) => console.warn("[settings] scan models:", e));
     invoke<boolean>("get_autostart").then(setAutostart).catch((e) => console.warn("[settings] get autostart:", e));
   }, []);
 
@@ -558,21 +595,40 @@ function SettingsPage({
             <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-warm-400 dark:text-zinc-500">
               Input Device
             </label>
-            <select
+            <CustomSelect
               value={selectedMic}
-              onChange={(e) => {
-                setSelectedMic(e.target.value);
-                saveSetting("microphone", e.target.value);
+              onChange={(val) => {
+                setSelectedMic(val);
+                saveSetting("microphone", val);
               }}
+              options={[
+                { value: "", label: "System Default" },
+                ...mics.map((m) => ({ value: m.name, label: m.name })),
+              ]}
               className={inputCls + " cursor-pointer"}
-            >
-              <option value="">System Default</option>
-              {mics.map((m) => (
-                <option key={m.index} value={m.name}>
-                  {m.name}
-                </option>
-              ))}
-            </select>
+            />
+          </section>
+
+          {/* Input Profile */}
+          <section>
+            <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-warm-400 dark:text-zinc-500">
+              Input Profile
+            </label>
+            <CustomSelect
+              value={inputProfile}
+              onChange={(val) => {
+                setInputProfile(val);
+                saveSetting("input_profile", val);
+              }}
+              options={[
+                { value: "headset", label: "Headset / External Mic" },
+                { value: "laptop", label: "Laptop Built-in Mic" },
+              ]}
+              className={inputCls + " cursor-pointer"}
+            />
+            <p className="mt-1.5 text-[11px] text-warm-400 dark:text-zinc-500">
+              Laptop profile boosts gain and filters background noise for built-in microphones.
+            </p>
           </section>
 
           {/* Language */}
@@ -580,24 +636,46 @@ function SettingsPage({
             <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-warm-400 dark:text-zinc-500">
               Language
             </label>
-            <select
+            <CustomSelect
               value={language}
-              onChange={(e) => {
-                setLanguage(e.target.value);
-                saveSetting("language", e.target.value);
+              onChange={(val) => {
+                setLanguage(val);
+                saveSetting("language", val);
               }}
+              options={WHISPER_LANGUAGES.map((l) => ({
+                value: l.code,
+                label: l.name,
+              }))}
               className={inputCls + " cursor-pointer"}
-            >
-              {WHISPER_LANGUAGES.map((l) => (
-                <option key={l.code} value={l.code}>
-                  {l.name}
-                </option>
-              ))}
-            </select>
+            />
             <p className="mt-1.5 text-[11px] text-warm-400 dark:text-zinc-500">
               Transcription language. Use auto-detect for multilingual input.
             </p>
           </section>
+
+          {/* AI Model */}
+          {models.length > 0 && (
+            <section>
+              <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-wider text-warm-400 dark:text-zinc-500">
+                AI Model
+              </label>
+              <CustomSelect
+                value={selectedModel}
+                onChange={(val) => {
+                  setSelectedModel(val);
+                  saveSetting("whisper_model", val);
+                }}
+                options={[
+                  { value: "", label: "Default (largest available)" },
+                  ...models.map((m) => ({ value: m.path, label: m.label })),
+                ]}
+                className={inputCls + " cursor-pointer"}
+              />
+              <p className="mt-1.5 text-[11px] text-warm-400 dark:text-zinc-500">
+                Smaller models are faster but less accurate. Restart required after changing.
+              </p>
+            </section>
+          )}
 
           {/* Hold Hotkey */}
           <section>
@@ -609,7 +687,7 @@ function SettingsPage({
                 {rebindingHold ? (
                   <span className="animate-pulse text-warm-400">Press any key combo...</span>
                 ) : (
-                  (holdHotkey || "F9").replace(/\+/g, " + ").toUpperCase()
+                  formatHotkey(holdHotkey || "F9")
                 )}
               </span>
               <button onMouseDown={(e) => { e.preventDefault(); setRebindingHold(true); }} className={btnCls}>
@@ -631,7 +709,7 @@ function SettingsPage({
                 {rebindingHandsfree ? (
                   <span className="animate-pulse text-warm-400">Press any key combo...</span>
                 ) : (
-                  (handsfreeHotkey || "F10").replace(/\+/g, " + ").toUpperCase()
+                  formatHotkey(handsfreeHotkey || "F10")
                 )}
               </span>
               <button onMouseDown={(e) => { e.preventDefault(); setRebindingHandsfree(true); }} className={btnCls}>
@@ -1080,8 +1158,14 @@ export function Dashboard({ theme, setTheme }: DashboardProps) {
         {hotkeyPermission && (
           <div className="flex items-center gap-3 border-b border-red-200 bg-red-50 px-4 py-2.5 dark:border-red-800 dark:bg-red-950/50">
             <span className="text-[13px] font-medium text-red-800 dark:text-red-300">
-              Hotkeys are disabled — grant <strong>Accessibility</strong> permission for Furo in System Settings &gt; Privacy &amp; Security, then restart the app.
+              Hotkeys are disabled — grant <strong>Accessibility</strong> permission for Furo in System Settings &gt; Privacy &amp; Security, then click Retry.
             </span>
+            <button
+              onClick={() => { invoke("retry_hotkey_listener").then(() => setHotkeyPermission(false)).catch(() => {}); }}
+              className="ml-auto shrink-0 rounded-lg bg-red-600 px-3 py-1 text-[12px] font-medium text-white transition hover:bg-red-700"
+            >
+              Retry
+            </button>
           </div>
         )}
         {/* Update banner */}

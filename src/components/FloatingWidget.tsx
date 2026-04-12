@@ -3,7 +3,35 @@ import { useFuro, type ServerState } from "../hooks/useFuro";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 
+/* ─── Inline icons (no icon library dependency) ──────────────────── */
+function ClipboardIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none"
+      stroke="currentColor" strokeWidth="1.5"
+      strokeLinecap="round" strokeLinejoin="round"
+      className={className}>
+      <rect x="5" y="1.5" width="6" height="3" rx="1" />
+      <path d="M4.5 3h-1A1.5 1.5 0 0 0 2 4.5v9A1.5 1.5 0 0 0 3.5 15h9a1.5 1.5 0 0 0 1.5-1.5v-9A1.5 1.5 0 0 0 12.5 3h-1" />
+    </svg>
+  );
+}
+function CheckIcon({ className = "" }: { className?: string }) {
+  return (
+    <svg width="16" height="16" viewBox="0 0 16 16" fill="none"
+      stroke="currentColor" strokeWidth="1.8"
+      strokeLinecap="round" strokeLinejoin="round"
+      className={className}>
+      <polyline points="3,8 6.5,12 13,4.5" />
+    </svg>
+  );
+}
+
 const IS_TAURI = "__TAURI_INTERNALS__" in window;
+// On macOS, WKWebView never receives mousemove when another app is the key
+// window, so DOM onMouseEnter/Leave are unreliable. We use a Rust polling
+// thread instead (see lib.rs start_widget_hover_tracker) that pushes
+// `widget-hover` Tauri events. On Windows the DOM events work fine.
+const IS_MAC = IS_TAURI && navigator.platform.toUpperCase().includes("MAC");
 
 const STORE_FILE = "dictation-history.json";
 const STORE_KEY = "dictations";
@@ -94,6 +122,7 @@ export function FloatingWidget() {
   const isActive = state === "recording" || state === "processing";
   const [isHovered, setIsHovered] = useState(false);
   const [showPopup, setShowPopup] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(false);
   const expanded = isActive || isHovered || showPopup;
   const lastMonitorIdRef = useRef<string>("");
   const isHoldingRef = useRef(false);
@@ -126,6 +155,16 @@ export function FloatingWidget() {
     return () => { unsub.then((fn) => fn()); };
   }, []);
 
+  // Fade widget when any app goes fullscreen (video player, browser fullscreen, etc.)
+  useEffect(() => {
+    if (!IS_TAURI) return;
+    const unsub = listen<boolean>("widget-fullscreen", (e) => {
+      setIsFullscreen(e.payload);
+      if (e.payload) setShowPopup(false);
+    });
+    return () => { unsub.then((fn) => fn()); };
+  }, []);
+
   useEffect(() => {
     document.documentElement.classList.add("dark");
     // Suppress scrollbar gutter so 100vw === window width, keeping pill centered.
@@ -137,23 +176,42 @@ export function FloatingWidget() {
     if (isActive) tauriShow();
   }, [isActive]);
 
-  // Tauri window tracks the pill size: expand immediately (window ready before
-  // CSS scale-up), collapse after 210 ms (CSS transition is 200 ms) so the
-  // window never clips the animating pill. Hover is on the outer container
-  // (stable hit zone) so resizing never affects hover detection.
+  // Tauri window sizing — keeps the native window exactly around the visible
+  // content so the invisible hit-zone doesn't block clicks to other apps.
+  //
+  // Sizes (logical px):
+  //   collapsed  → 40 × 10   (tiny idle pill)
+  //   expanded   → 80 × 20   (hovered / recording pill)
+  //   popup      → 80 × 62   (pill + 6px gap + 36px box)
+  //
+  // Smoothness rules:
+  //   • EXPAND instantly — the window grows before CSS starts animating.
+  //   • COLLAPSE after delay — wait for CSS animation to finish, then shrink.
+  //   • Opening the popup pre-sizes in handleContextMenu (one frame ahead).
+  const prevState = useRef({ expanded: false, showPopup: false });
   useEffect(() => {
     if (!IS_TAURI) return;
-    if (showPopup) {
-      // Popup overlays the pill at bottom-0, grows upward 100px
-      invoke("widget_set_size", { width: 80, height: 100 }).catch(() => {});
+    const prev = prevState.current;
+    prevState.current = { expanded, showPopup };
+
+    // --- Determine target size ---
+    let w: number, h: number;
+    if (showPopup)       { w = 80; h = 62; }
+    else if (expanded)   { w = 80; h = 20; }
+    else                 { w = 40; h = 10; }
+
+    // --- Growing? Resize immediately (no visible delay) ---
+    const wasSmaller =
+      (!prev.expanded && expanded) ||
+      (!prev.showPopup && showPopup);
+    if (wasSmaller) {
+      invoke("widget_set_size", { width: w, height: h }).catch(() => {});
       return;
     }
-    if (expanded) {
-      invoke("widget_set_size", { width: 80, height: 20 }).catch(() => {});
-      return;
-    }
+
+    // --- Shrinking? Delay so CSS transition plays first ---
     const timer = setTimeout(() => {
-      invoke("widget_set_size", { width: 40, height: 10 }).catch(() => {});
+      invoke("widget_set_size", { width: w, height: h }).catch(() => {});
     }, 210);
     return () => clearTimeout(timer);
   }, [expanded, showPopup]);
@@ -231,15 +289,40 @@ export function FloatingWidget() {
     invoke("widget_hold_release").catch(() => {});
   };
 
-  // ── Right-click: toggle last-transcription popup ──────────
+  // ── Right-click: toggle the box ──────────────────────────
+  // Pre-size the Tauri window BEFORE the popup renders so there is never a
+  // frame where the box is opacity-100 but the window is still 20px tall
+  // (which would leave a transparent gap and leak the cursor to the app below).
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setShowPopup((v) => !v);
+    if (!showPopup) {
+      if (IS_TAURI) invoke("widget_set_size", { width: 80, height: 62 }).catch(() => {});
+      requestAnimationFrame(() => setShowPopup(true));
+    } else {
+      setShowPopup(false);
+    }
   };
 
-  // On macOS, mouse events on transparent windows can be unreliable.
-  // Use a timeout to auto-collapse if mouse leaves and doesn't return.
+  // ── Box click: copy last transcription to clipboard and re-paste ──
+  const [copied, setCopied] = useState(false);
+  const handleBoxClick = async (e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!displayText) return;
+    try {
+      await navigator.clipboard.writeText(displayText);
+    } catch { /* fallback: just paste via Tauri */ }
+    if (IS_TAURI) {
+      invoke("repaste_last", { text: displayText }).catch(() => {});
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1200);
+  };
+
+  // On macOS, hover is driven by the Rust polling thread (widget-hover events)
+  // because WKWebView stops receiving mousemove when another app is focused.
+  // On Windows, the plain DOM events work fine.
   const hoverTimeout = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleEnter = () => {
@@ -247,7 +330,9 @@ export function FloatingWidget() {
     setIsHovered(true);
   };
   const handleLeave = () => {
-    // Small delay prevents flicker from macOS hit-test edge cases
+    // 200 ms absorbs the occasional false hover-off the Rust tracker can emit
+    // while the window is mid-resize (e.g. right-click grow). 50 ms poll × 4
+    // polls ≈ 200 ms window before we trust a sustained "not hovering" signal.
     hoverTimeout.current = setTimeout(() => {
       setIsHovered(false);
       setShowPopup(false);
@@ -255,35 +340,65 @@ export function FloatingWidget() {
         isHoldingRef.current = false;
         invoke("widget_hold_release").catch(() => {});
       }
-    }, 80);
+    }, 200);
   };
+
+  // macOS: subscribe to `widget-hover` events pushed by the Rust cursor-
+  // polling thread. This works regardless of which app is frontmost.
+  useEffect(() => {
+    if (!IS_MAC) return;
+    let unlistenFn: (() => void) | undefined;
+    import("@tauri-apps/api/event").then(({ listen }) =>
+      listen<boolean>("widget-hover", (e) => {
+        if (e.payload) {
+          handleEnter();
+        } else {
+          handleLeave();
+        }
+      })
+    ).then((fn) => { unlistenFn = fn; });
+    return () => { unlistenFn?.(); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div
-      className="fixed inset-0 cursor-pointer"
-      onMouseEnter={handleEnter}
-      onMouseLeave={handleLeave}
+      className={`fixed inset-0 cursor-default transition-opacity duration-500 ease-in-out ${
+        isFullscreen ? "opacity-0 pointer-events-none" : "opacity-100"
+      }`}
+      onMouseEnter={IS_MAC ? undefined : handleEnter}
+      onMouseLeave={IS_MAC ? undefined : handleLeave}
       onMouseDown={handleMouseDown}
       onMouseUp={handleMouseUp}
       onContextMenu={handleContextMenu}
     >
-      {/* ── Popup: absolute at bottom-0, grows upward, covers the pill area */}
+      {/* ── The Box: icon-only pill floating 6px above the main pill.
+           44×36px. Press effect via active:scale-95 + spring transition. */}
       <div
         className={`
-          absolute bottom-0 left-1/2 -translate-x-1/2 w-[80px] overflow-hidden rounded-lg
-          border border-white/30 shadow-lg shadow-black/30
-          backdrop-blur-xl bg-black/80
-          transition-[height,opacity] duration-200 ease-[cubic-bezier(0.4,0,0.2,1)]
+          absolute left-1/2 -translate-x-1/2 w-[44px] h-[36px]
+          rounded-2xl border bg-[#111]/[0.97]
+          shadow-2xl shadow-black/70
+          cursor-pointer select-none flex items-center justify-center
+          transition-[opacity,transform] ease-[cubic-bezier(0.34,1.56,0.64,1)]
+          active:scale-[0.88] active:duration-75
           ${showPopup
-            ? "h-[100px] opacity-100"
-            : "h-0 opacity-0 pointer-events-none border-transparent shadow-none"
+            ? "opacity-100 translate-y-0 pointer-events-auto border-white/[0.07] duration-150"
+            : "opacity-0 translate-y-2 pointer-events-none border-transparent duration-150"
           }
         `}
+        style={{ bottom: "26px" }}
+        onClick={handleBoxClick}
+        onMouseDown={(e) => e.stopPropagation()}
       >
-        <div className="h-full overflow-y-auto p-[6px] scrollbar-none">
-          <p className="text-[8px] leading-[1.3] text-white/90 break-words select-text cursor-text">
-            {displayText || "No transcription yet."}
-          </p>
+        <div
+          className={`transition-[color,transform] duration-200 ${
+            copied
+              ? "text-white/50 scale-110"
+              : "text-white/35 scale-100"
+          }`}
+        >
+          {copied ? <CheckIcon /> : <ClipboardIcon />}
         </div>
       </div>
 
@@ -294,7 +409,7 @@ export function FloatingWidget() {
             flex items-center justify-center rounded-full
             border shadow-lg shadow-black/30
             backdrop-blur-xl bg-black/80
-            transition-[width,height,opacity,border-color] duration-200 ease-[cubic-bezier(0.4,0,0.2,1)]
+            transition-[width,height,opacity,border-color] duration-150 ease-out
             ${expanded
               ? "w-[80px] h-[20px] border-white/40"
               : "w-[40px] h-[10px] border-white/30 opacity-80"

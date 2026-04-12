@@ -71,6 +71,10 @@ mod ort_impl {
             self.context.lock().fill(0.0);
         }
 
+        pub fn set_threshold(&mut self, threshold: f32) {
+            self.threshold = threshold;
+        }
+
         pub fn is_speech(&mut self, chunk_i16: &[i16]) -> bool {
             let chunk_f32: Vec<f32> = chunk_i16
                 .iter()
@@ -204,6 +208,8 @@ mod stub_impl {
         }
 
         pub fn reset(&self) {}
+
+        pub fn set_threshold(&mut self, _threshold: f32) {}
 
         pub fn is_speech(&mut self, _chunk_i16: &[i16]) -> bool {
             true

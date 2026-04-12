@@ -324,6 +324,8 @@ pub(super) fn hotkey_worker(
     let mut rebind_pressed: HashSet<u32> = HashSet::new();
     let mut rebind_modifiers: HashSet<u32> = HashSet::new();
     let mut rebind_trigger: Option<u32> = None;
+    let mut rebind_last_modifier: Option<u32> = None;
+    let mut was_rebind_active = false;
 
     log::info!(
         "Hotkey worker running -- hold: {:?}, hands-free: {:?}",
@@ -331,6 +333,30 @@ pub(super) fn hotkey_worker(
     );
 
     while !stop_flag.load(Ordering::Relaxed) {
+        // ── Check rebind state transitions BEFORE waiting for events ──
+        // This ensures we detect activation/deactivation even during idle
+        // periods (no key events flowing). Previously, the check was after
+        // recv_timeout, so timeout → continue skipped it entirely.
+        let rebind_active = REBIND_MODE_ACTIVE.load(Ordering::Relaxed);
+        if rebind_active && !was_rebind_active {
+            if !pressed_keys.is_empty() || !active_modifiers.is_empty() {
+                log::info!(
+                    "[rebind] clearing stale state on activation — \
+                     pressed_keys={:?}, active_modifiers={:?}",
+                    pressed_keys, active_modifiers
+                );
+            }
+            pressed_keys.clear();
+            active_modifiers.clear();
+            hold_active = false;
+            rebind_pressed.clear();
+            rebind_modifiers.clear();
+            rebind_trigger = None;
+            rebind_last_modifier = None;
+            log::info!("[rebind] mode activated — all state reset");
+        }
+        was_rebind_active = rebind_active;
+
         let event = match receiver.recv_timeout(std::time::Duration::from_millis(500)) {
             Ok(e) => e,
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
@@ -346,17 +372,29 @@ pub(super) fn hotkey_worker(
                 // Skip auto-repeat: if the key is already tracked as held,
                 // this is a repeat event from the OS — ignore it.
                 if !pressed_keys.insert(vk) {
+                    if rebind_active {
+                        log::debug!(
+                            "[rebind] suppressed auto-repeat for vk=0x{:02X} ({})",
+                            vk, vk_to_combo_part(vk)
+                        );
+                    }
                     continue;
                 }
 
                 // Rebind mode: collect keys for combo capture; skip normal matching.
-                if REBIND_MODE_ACTIVE.load(Ordering::Relaxed) {
+                if rebind_active {
                     rebind_pressed.insert(vk);
                     if vk_to_modifier(vk).is_some() {
                         rebind_modifiers.insert(vk);
+                        rebind_last_modifier = Some(vk);
                     } else {
                         rebind_trigger = Some(vk);
                     }
+                    log::info!(
+                        "[rebind] key down: {} (0x{:02X}) — pressed={:?}, trigger={:?}, last_mod={:?}",
+                        vk_to_combo_part(vk), vk, rebind_pressed, rebind_trigger,
+                        rebind_last_modifier.map(|v| vk_to_combo_part(v))
+                    );
                     continue;
                 }
 
@@ -412,10 +450,33 @@ pub(super) fn hotkey_worker(
                 pressed_keys.remove(&vk);
 
                 // Rebind mode: finalize when all tracked keys are released.
-                if REBIND_MODE_ACTIVE.load(Ordering::Relaxed) {
+                if rebind_active {
                     rebind_pressed.remove(&vk);
+                    log::info!(
+                        "[rebind] key up: {} (0x{:02X}) — remaining={:?}",
+                        vk_to_combo_part(vk), vk, rebind_pressed
+                    );
                     if rebind_pressed.is_empty() {
-                        if let Some(trigger_vk) = rebind_trigger.take() {
+                        // Determine the trigger key. If the user pressed a
+                        // non-modifier key, use that. Otherwise, for modifier-
+                        // only combos (e.g. just Command, or Ctrl+Shift), use
+                        // the last modifier pressed as the trigger.
+                        let effective_trigger = rebind_trigger.take().or_else(|| {
+                            if let Some(last_mod) = rebind_last_modifier.take() {
+                                // Remove the trigger from the modifiers set so
+                                // it appears as the trigger, not a prefix.
+                                rebind_modifiers.remove(&last_mod);
+                                log::info!(
+                                    "[rebind] modifier-only combo — using {} (0x{:02X}) as trigger",
+                                    vk_to_combo_part(last_mod), last_mod
+                                );
+                                Some(last_mod)
+                            } else {
+                                None
+                            }
+                        });
+
+                        if let Some(trigger_vk) = effective_trigger {
                             // Build combo: canonical modifier order + trigger.
                             let mut parts: Vec<String> = Vec::new();
                             for (check_vks, name) in &[
@@ -434,9 +495,14 @@ pub(super) fn hotkey_worker(
                             if let Some(ref cb) = callbacks.on_rebind_captured {
                                 cb(combo);
                             }
+                        } else {
+                            log::warn!(
+                                "[rebind] all keys released but no trigger or modifier captured — ignoring"
+                            );
                         }
                         rebind_modifiers.clear();
                         rebind_trigger = None;
+                        rebind_last_modifier = None;
                         hold_active = false;
                     }
                     if let Some(mod_name) = vk_to_modifier(vk) {

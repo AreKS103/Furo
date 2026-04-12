@@ -95,6 +95,13 @@ impl SidecarManager {
         }
 
         let port_str = config::WHISPER_SERVER_PORT.to_string();
+
+        // Use all available CPU cores for inference. On Intel Macs without
+        // Metal GPU, this makes a meaningful difference for large models.
+        let thread_count = std::thread::available_parallelism()
+            .map(|n| n.get().to_string())
+            .unwrap_or_else(|_| "4".to_string());
+
         let mut args = vec![
             "--model",
             model_str,
@@ -104,6 +111,17 @@ impl SidecarManager {
             &port_str,
             "--inference-path",
             "/v1/audio/transcriptions",
+            "--threads",
+            &thread_count,
+            // Optimize for speed: skip timestamp computation and use greedy
+            // decoding (1 candidate). suppress-nst removes [music]/[applause]
+            // hallucination tokens. Temperature fallback is kept enabled — it
+            // is the only mechanism that breaks repetition loops when the
+            // decoder gets stuck, and disabling it causes the 20x repeat bug.
+            "--no-timestamps",
+            "--best-of", "1",
+            "--beam-size", "1",
+            "--suppress-nst",
         ];
 
         // Flash Attention works with CUDA (Windows) and Metal on Apple Silicon.
@@ -117,6 +135,7 @@ impl SidecarManager {
         if use_flash_attn {
             args.push("--flash-attn");
         }
+
         log::info!("whisper-server args: {:?} (flash_attn={})", args, use_flash_attn);
 
         let cmd = app

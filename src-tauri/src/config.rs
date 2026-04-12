@@ -90,6 +90,17 @@ pub const NOISE_FLOOR_ALPHA: f32 = 0.02;
 
 pub const PEAK_CEILING_DBFS: f32 = -5.0;
 
+// Adaptive Noise Gate
+
+/// Number of audio chunks to collect before applying the adaptive gate.
+/// At 512 samples / 16 kHz, one chunk = 32 ms, so 8 chunks ≈ 256 ms of
+/// room-noise calibration at the start of each recording.
+pub const ADAPTIVE_GATE_WARM_UP_CHUNKS: u32 = 8;
+
+/// How many dB above the tracked noise floor to set the adaptive gate.
+/// 10 dB = signal must be ~3× louder than the ambient noise to pass.
+pub const ADAPTIVE_GATE_HEADROOM_DB: f32 = 10.0;
+
 // Microphone Filtering
 
 /// Device names containing any of these keywords are excluded from the mic list.
@@ -115,3 +126,46 @@ pub const MIC_EXCLUDE_KEYWORDS: &[&str] = &[
 pub const SIDECAR_STARTUP_TIMEOUT_SECS: u64 = 120;
 
 pub const SIDECAR_POLL_INTERVAL_MS: u64 = 250;
+
+// Input Profiles
+
+/// Audio input profile — tuned parameters for different microphone placements.
+#[derive(Debug, Clone, Copy)]
+pub struct InputProfile {
+    /// Digital gain applied to raw audio before everything else (dB).
+    pub input_gain_db: f32,
+    /// Noise gate threshold (dBFS). Samples below this RMS are zeroed.
+    pub noise_gate_dbfs: f32,
+    /// Highpass filter cutoff applied before VAD and volume metering (Hz).
+    pub pre_vad_highpass_hz: f32,
+    /// Override for the VAD speech probability threshold (0.0–1.0).
+    pub vad_threshold: f32,
+    /// Multiplier for the volume meter display value.
+    pub volume_display_boost: f32,
+}
+
+/// Headset mic: close to mouth, good SNR, minimal processing needed.
+pub const PROFILE_HEADSET: InputProfile = InputProfile {
+    input_gain_db: 0.0,
+    noise_gate_dbfs: -60.0, // effectively off
+    pre_vad_highpass_hz: 80.0,
+    vad_threshold: VAD_THRESHOLD,
+    volume_display_boost: 1.0,
+};
+
+/// Laptop mic: far from mouth, low SNR, needs significant boost and filtering.
+pub const PROFILE_LAPTOP: InputProfile = InputProfile {
+    input_gain_db: 18.0,    // +18 dB to compensate for distance
+    noise_gate_dbfs: -45.0,  // reject fan/ambient noise
+    pre_vad_highpass_hz: 200.0, // reject case rumble, fan hum
+    vad_threshold: 0.35,     // more sensitive due to lower levels
+    volume_display_boost: 2.5,
+};
+
+/// Look up a profile by name. Returns headset for any unknown name.
+pub fn input_profile_by_name(name: &str) -> InputProfile {
+    match name {
+        "laptop" => PROFILE_LAPTOP,
+        _ => PROFILE_HEADSET,
+    }
+}
