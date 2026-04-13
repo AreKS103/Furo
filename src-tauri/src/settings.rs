@@ -17,17 +17,17 @@ fn defaults() -> HashMap<String, String> {
         "deepdml/faster-whisper-large-v3-turbo-ct2".into(),
     );
 
-    // macOS: use alt+space (Option+Space) to avoid the Ctrl+Space system shortcut
-    // (input source switching) which intercepts the combo before apps see it.
+    // macOS: default to ctrl+alt (which equals ctrl+option)
     #[cfg(target_os = "macos")]
     {
-        m.insert("hotkey_hold".into(), "alt+space".into());
-        m.insert("hotkey_handsfree".into(), "alt+shift+space".into());
+        m.insert("hotkey_hold".into(), "ctrl+alt".into());
+        m.insert("hotkey_handsfree".into(), "ctrl+alt+space".into());
     }
+    // Windows: default to ctrl+win
     #[cfg(not(target_os = "macos"))]
     {
-        m.insert("hotkey_hold".into(), "ctrl+space".into());
-        m.insert("hotkey_handsfree".into(), "ctrl+shift+space".into());
+        m.insert("hotkey_hold".into(), "ctrl+win".into());
+        m.insert("hotkey_handsfree".into(), "ctrl+win+space".into());
     }
 
     m.insert("theme".into(), "dark".into());

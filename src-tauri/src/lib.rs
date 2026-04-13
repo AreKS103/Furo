@@ -901,7 +901,6 @@ pub fn run() {
             retry_hotkey_listener,
             widget_hold_start,
             widget_hold_release,
-            widget_set_size,
             widget_reposition,
             repaste_last,
         ])
@@ -919,7 +918,7 @@ pub fn run() {
             let screen_size = monitor.size();
             let scale = monitor.scale_factor();
             let widget_w: f64 = 80.0;
-            let widget_h: f64 = 20.0;
+            let widget_h: f64 = 62.0; // always tall enough for pill + popup
             let x = (screen_size.width as f64 / scale - widget_w) / 2.0;
             // macOS Dock occupies ~70-90px at bottom; use a larger offset so
             // the pill isn't hidden behind it.

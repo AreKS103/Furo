@@ -13,6 +13,10 @@
     "core:window:allow-set-size",
     "core:window:allow-center",
     "core:window:allow-close",
+    "core:window:allow-start-dragging",
+    "core:window:allow-minimize",
+    "core:window:allow-toggle-maximize",
+    "core:window:allow-is-maximized",
     "core:event:default",
     "store:default",
     {

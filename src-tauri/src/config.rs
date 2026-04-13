@@ -46,13 +46,16 @@ pub const WHISPER_SERVER_URL: &str = "http://127.0.0.1:8080";
 
 pub const LANGUAGE: &str = "en";
 
-/// Initial prompt — biases Whisper toward programming/technical vocabulary and user preferences.
-pub const INITIAL_PROMPT: &str = "\
-Claude, Furo, FastAPI, React, TypeScript, Tailwind CSS, async/await, kwargs, \
-Tauri, CTranslate2, WebSocket, JSON, API, REST, GraphQL, \
-npm, pnpm, venv, PyAudio, CUDA, ONNX, int8, float16, \
-GitHub, Vercel, Docker, Kubernetes, PostgreSQL, Redis, \
-useState, useEffect, useRef, className, onClick, onChange";
+/// Initial prompt — biases Whisper toward vocabulary it would otherwise misspell.
+///
+/// Keep this list MINIMAL. The decoder runs cross-attention against every prompt
+/// token for each output token it generates. 35 words ≈ 70 BPE tokens means
+/// ~840 extra attention ops per 2-second clip. Only include proper nouns that
+/// Whisper genuinely struggles with from training data alone.
+///
+/// Removed: React, TypeScript, JSON, API, GitHub, Docker, useState, etc. —
+/// all are extremely common in training data and transcribed correctly without help.
+pub const INITIAL_PROMPT: &str = "Furo, Tauri, CTranslate2";
 
 // DSP Conditioning
 

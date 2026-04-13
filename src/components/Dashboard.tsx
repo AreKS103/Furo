@@ -6,6 +6,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getVersion } from "@tauri-apps/api/app";
 import CustomSelect from "./CustomSelect";
 
+
 const IS_MAC = navigator.platform.toUpperCase().includes("MAC");
 
 interface Mic {
@@ -490,19 +491,19 @@ function SettingsPage({
 
   /* ── Rebind effect ───────────────────────────────────────────────
    *
-   * Rebind capture is handled entirely on the Rust side so that OS-level
-   * shortcuts (Win key → Start menu, Win+Space → language switcher) are
-   * suppressed while the user is assigning a new hotkey.
-   *
-   * Flow:
-   *  1. invoke("set_rebind_mode", { active: true })  — hook enters sniff mode
-   *  2. Rust worker collects pressed VK codes, builds combo on key-up
-   *  3. Hook emits `furo://rebind-capture` with the combo string
-   *  4. Frontend receives it, saves, clears rebind state
-   *  5. invoke("set_rebind_mode", { active: false })  — hook exits sniff mode
-   *
-   * Mouse buttons are still captured on the frontend side (no OS conflict).
-   * Escape cancels the rebind without changing the saved key.
+   * Concept A + B hybrid:
+   *  • PRIMARY path: frontend keydown listener — fires instantly the moment
+   *    a non-modifier key is pressed, reads modifier state from the event
+   *    object (ctrlKey/altKey/shiftKey/metaKey) and calls finish() immediately.
+   *    No waiting for any Rust IPC event, no timers, no race conditions.
+   *  • FALLBACK path: furo://rebind-capture Tauri event — handles the rare
+   *    edge case where only modifier keys are pressed (e.g. just "Win").
+   *    Protected by a `finished` guard so it can't double-fire.
+   *  • Win key suppression: invoke("set_rebind_mode") tells the Rust
+   *    WH_KEYBOARD_LL hook to swallow Win key messages so the Start Menu
+   *    never opens during capture. The Win key's keyboard state IS still
+   *    updated even when suppressed, so e.metaKey correctly reflects
+   *    whether Win is held when the trigger key fires.
    */
   const useRebindEffect = (
     active: boolean,
@@ -513,31 +514,132 @@ function SettingsPage({
     useEffect(() => {
       if (!active) return;
 
-      // Tell the Rust hook to enter rebind sniff mode (suppresses Win key etc.)
-      invoke("set_rebind_mode", { active: true });
-
+      let finished = false;
       let unlisten: (() => void) | undefined;
 
       const finish = (combo: string) => {
-        invoke("set_rebind_mode", { active: false });
+        if (finished) return;
+        finished = true;
+        unlisten?.();
+        invoke("set_rebind_mode", { active: false }).catch(() => {});
         setKey(combo);
         setActive(false);
         saveSetting(settingName, combo);
-        unlisten?.();
       };
 
       const cancel = () => {
-        invoke("set_rebind_mode", { active: false });
-        setActive(false);
+        if (finished) return;
+        finished = true;
         unlisten?.();
+        invoke("set_rebind_mode", { active: false }).catch(() => {});
+        setActive(false);
       };
 
-      // Backend-captured combo (keyboard, including Win combos)
-      listen<string>("furo://rebind-capture", (event) => {
-        finish(event.payload);
-      }).then((fn) => { unlisten = fn; });
+      // Fallback: Rust-captured combo for modifier-only edge cases.
+      // Registered before activating rebind mode to avoid any timing gap.
+      listen<string>("furo://rebind-capture", (ev) => finish(ev.payload))
+        .then((fn) => { unlisten = fn; });
 
-      // Frontend still handles mouse buttons (no OS conflict there)
+      // Activate Win key suppression in the Rust low-level hook.
+      invoke("set_rebind_mode", { active: true }).catch(() => {});
+
+      // Convert KeyboardEvent.code to our internal combo name.
+      // Names must match vk_to_combo_part() in hotkey.rs.
+      const codeToName = (code: string): string | null => {
+        if (code.startsWith("Key")) return code.slice(3).toLowerCase();   // KeyA → a
+        if (code.startsWith("Digit")) return code.slice(5);               // Digit5 → 5
+        const fm = code.match(/^F(\d{1,2})$/);
+        if (fm) return "f" + fm[1];                                        // F9 → f9
+        if (code.startsWith("Numpad")) {
+          const n = code.slice(6);
+          const nm: Record<string, string> = {
+            "0":"numpad0","1":"numpad1","2":"numpad2","3":"numpad3",
+            "4":"numpad4","5":"numpad5","6":"numpad6","7":"numpad7",
+            "8":"numpad8","9":"numpad9","Decimal":"numpaddecimal",
+            "Multiply":"numpadmultiply","Add":"numpadadd",
+            "Subtract":"numpadsubtract","Divide":"numpaddivide","Enter":"enter",
+          };
+          return nm[n] ?? null;
+        }
+        const m: Record<string, string> = {
+          Space:"space", Enter:"enter", Tab:"tab", Backspace:"backspace",
+          Delete:"delete", Insert:"insert", Home:"home", End:"end",
+          PageUp:"page_up", PageDown:"page_down",
+          ArrowUp:"up", ArrowDown:"down", ArrowLeft:"left", ArrowRight:"right",
+          CapsLock:"caps_lock", NumLock:"num_lock", ScrollLock:"scroll_lock",
+          PrintScreen:"print_screen", Pause:"pause",
+          Semicolon:"semicolon", Equal:"equal", Comma:"comma",
+          Minus:"minus", Period:"period", Slash:"slash", Backquote:"backquote",
+          BracketLeft:"bracketleft", Backslash:"backslash",
+          BracketRight:"bracketright", Quote:"quote", ContextMenu:"contextmenu",
+        };
+        return m[code] ?? null;
+      };
+
+      // Pure modifier key codes — wait for a non-modifier trigger key,
+      // EXCEPT if the user releases all modifiers without pressing a normal key.
+      const MODIFIER_CODES = new Set([
+        "ControlLeft","ControlRight","AltLeft","AltRight",
+        "ShiftLeft","ShiftRight","MetaLeft","MetaRight","OSLeft","OSRight",
+      ]);
+
+      let heldModifiers = new Set<string>();
+
+      const kd = (e: KeyboardEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        if (e.code === "Escape") { cancel(); return; }
+        
+        if (MODIFIER_CODES.has(e.code)) {
+          heldModifiers.add(e.code);
+          return;
+        }
+
+        const trigger = codeToName(e.code);
+        if (!trigger) return;
+        // Build combo from modifier state at keydown time — instant, no timers.
+        const parts: string[] = [];
+        if (e.ctrlKey) parts.push("ctrl");
+        if (e.metaKey) parts.push("win"); // "win" maps to Meta/Command on macOS
+        if (e.altKey) parts.push("alt"); // "alt" maps to Alt/Option on macOS
+        if (e.shiftKey) parts.push("shift");
+        parts.push(trigger);
+        finish(parts.join("+"));
+      };
+
+      const ku = (e: KeyboardEvent) => {
+        e.preventDefault();
+        e.stopPropagation();
+        
+        if (MODIFIER_CODES.has(e.code)) {
+          heldModifiers.delete(e.code);
+          
+          // Releasing a modifier without pressing a trigger key?
+          // This captures modifier-only combos like "ctrl+win".
+          // We look at the state JUST BEFORE this key was released.
+          // e.ctrlKey evaluates to false for the released control key,
+          // so we use our own knowledge that at least one key was held.
+          if (!finished) {
+            const parts: string[] = [];
+            // Reconstruct state including the key just released
+            const wasCtrl = e.ctrlKey || e.code.startsWith("Control");
+            const wasWin = e.metaKey || e.code.startsWith("Meta") || e.code.startsWith("OS");
+            const wasAlt = e.altKey || e.code.startsWith("Alt");
+            const wasShift = e.shiftKey || e.code.startsWith("Shift");
+
+            if (wasCtrl) parts.push("ctrl");
+            if (wasWin) parts.push("win");
+            if (wasAlt) parts.push("alt");
+            if (wasShift) parts.push("shift");
+
+            // Only bind if there was at least one modifier requested
+            if (parts.length > 0) {
+              finish(parts.join("+"));
+            }
+          }
+        }
+      };
+
       const mh = (e: MouseEvent) => {
         const hasModifier = e.ctrlKey || e.metaKey || e.altKey || e.shiftKey;
         if ((e.button === 0 || e.button === 2) && !hasModifier) return;
@@ -547,22 +649,19 @@ function SettingsPage({
         if (e.metaKey) parts.push("win");
         if (e.altKey) parts.push("alt");
         if (e.shiftKey) parts.push("shift");
-        const bm: Record<number, string> = { 0: "mouse1", 1: "mouse3", 2: "mouse2", 3: "mouse4", 4: "mouse5" };
+        const bm: Record<number, string> = { 0:"mouse1", 1:"mouse3", 2:"mouse2", 3:"mouse4", 4:"mouse5" };
         parts.push(bm[e.button] ?? `mouse${e.button + 1}`);
         finish(parts.join("+"));
       };
 
-      // Escape cancels
-      const kd = (e: KeyboardEvent) => {
-        if (e.code === "Escape") { e.preventDefault(); cancel(); }
-      };
-
       window.addEventListener("keydown", kd, true);
-      window.addEventListener("mousedown", mh);
+      window.addEventListener("keyup", ku, true);
+      window.addEventListener("mousedown", mh, true);
       return () => {
         window.removeEventListener("keydown", kd, true);
-        window.removeEventListener("mousedown", mh);
-        invoke("set_rebind_mode", { active: false });
+        window.removeEventListener("keyup", ku, true);
+        window.removeEventListener("mousedown", mh, true);
+        if (!finished) invoke("set_rebind_mode", { active: false }).catch(() => {});
         unlisten?.();
       };
     }, [active, setActive, setKey, settingName]);
@@ -946,6 +1045,8 @@ function SettingsPage({
 }
 
 /* ════════════════════════════════════════════════════════════════════ */
+
+
 export function Dashboard({ theme, setTheme }: DashboardProps) {
   const { state, message, settings, lastText, lastError } = useFuro();
   const { entries, saveEntry, clearAll, cumulativeStats } = useHistory();
@@ -1161,8 +1262,11 @@ export function Dashboard({ theme, setTheme }: DashboardProps) {
     <>
       {/* ── Left sidebar ──────────────────────────────────────────── */}
       <aside className="flex w-[190px] flex-shrink-0 flex-col border-r border-cream-200 bg-cream-100 dark:border-zinc-800 dark:bg-zinc-950">
-        {/* Logo */}
-        <div className="flex h-14 items-center gap-2 px-4" data-tauri-drag-region>
+        {/* Logo — also acts as drag region for the sidebar's top area */}
+        <div 
+          data-tauri-drag-region
+          className="flex h-14 items-center gap-2 px-4 select-none" 
+        >
           <svg
             className="h-6 w-6 text-warm-800 dark:text-zinc-100"
             viewBox="0 0 24 24"
@@ -1197,7 +1301,8 @@ export function Dashboard({ theme, setTheme }: DashboardProps) {
       </aside>
 
       {/* ── Main content ──────────────────────────────────────────── */}
-      <main className="flex flex-1 flex-col overflow-hidden bg-cream-50 dark:bg-zinc-900">
+      <main className="flex flex-1 flex-col overflow-hidden bg-cream-50 dark:bg-zinc-900 pt-[36px]">
+        
         {/* App Translocation warning (macOS) */}
         {appTranslocation && (
           <div className="flex items-center gap-3 border-b border-amber-200 bg-amber-50 px-4 py-2.5 dark:border-amber-800 dark:bg-amber-950/50">

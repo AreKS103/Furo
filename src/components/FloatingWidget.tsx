@@ -141,22 +141,6 @@ export function FloatingWidget() {
   // calls ShowWindow(SW_SHOW) which activates the widget and steals
   // foreground focus from the user's active text field.
 
-  // ── Window resize: popup needs 80×62, pill-only needs 80×20 ───
-  // Resize is async — open: resize immediately (CSS animation has a small
-  // delay to let the resize settle). Close: delay resize until animation ends.
-  useEffect(() => {
-    if (!IS_TAURI) return;
-    if (showPopup) {
-      invoke("widget_set_size", { width: 80, height: 62 }).catch(() => {});
-      return;
-    }
-    // Shrink window after the close animation finishes
-    const id = setTimeout(() => {
-      invoke("widget_set_size", { width: 80, height: 20 }).catch(() => {});
-    }, 150);
-    return () => clearTimeout(id);
-  }, [showPopup]);
-
   // ── Multi-monitor: reposition to cursor's screen ──────────────
   useEffect(() => {
     if (!IS_TAURI) return;
@@ -253,38 +237,33 @@ export function FloatingWidget() {
 
   return (
     <div
-      className="fixed inset-0 cursor-default"
+      className="fixed inset-0"
       style={{
         opacity: isFullscreen ? 0 : 1,
-        pointerEvents: isFullscreen ? "none" : "auto",
+        pointerEvents: "none", // transparent areas are always click-through; children manage their own
         transition: `opacity 500ms ${EASE_OUT}`,
       }}
-      onMouseEnter={IS_MAC ? undefined : handleEnter}
-      onMouseLeave={IS_MAC ? undefined : handleLeave}
-      onMouseDown={handleMouseDown}
-      onMouseUp={handleMouseUp}
-      onContextMenu={handleContextMenu}
     >
       {/* ── Popup box: reveals bottom-first (grows out of pill top) ── */}
       <div
         className="absolute left-1/2 w-[44px] h-[36px] rounded-2xl border border-white/40 backdrop-blur-xl bg-black/80 shadow-lg shadow-black/30 cursor-pointer select-none flex items-center justify-center"
         style={{
           bottom: "22px",
-          transform: "translateX(-50%)",
-          opacity: showPopup ? 1 : 0,
-          // clip-path wipe: inset(100% top…) = nothing visible (collapses to bottom edge)
-          // → inset(0% top…) = fully visible. Bottom of box (near pill) reveals first → grows up.
-          clipPath: showPopup
-            ? "inset(0% 0% 0% 0% round 12px)"
-            : "inset(100% 0% 0% 0% round 12px)",
-          // 40ms delay on open lets the Tauri window resize settle first
-          transition: showPopup
-            ? `opacity ${DURATION} ${EASE_OUT} 40ms, clip-path ${DURATION} ${EASE_OUT} 40ms`
-            : `opacity 180ms ${EASE_OUT}, clip-path 180ms ${EASE_OUT}`,
-          pointerEvents: showPopup ? "auto" : "none",
+            transform: showPopup ? "translateX(-50%) translateY(0) scale(1)" : "translateX(-50%) translateY(15px) scale(0.9)",
+            opacity: showPopup ? 1 : 0,
+            // Slide up and fade in instead of folding
+            transformOrigin: "bottom center",
+            // No resize delay needed — window is always 62px tall, animation is pure CSS
+            transition: showPopup
+              ? `opacity ${DURATION} ${EASE_OUT}, transform ${DURATION} ${EASE_OUT}`
+                : `opacity 180ms ${EASE_OUT}, transform 180ms ${EASE_OUT}`,
+          pointerEvents: (showPopup && !isFullscreen) ? "auto" : "none",
         }}
         onClick={handleBoxClick}
         onMouseDown={(e) => e.stopPropagation()}
+        onMouseEnter={IS_MAC ? undefined : handleEnter}
+        onMouseLeave={IS_MAC ? undefined : handleLeave}
+        onContextMenu={handleContextMenu}
       >
         <div style={{
           color: copied ? "rgba(255,255,255,0.5)" : "rgba(255,255,255,0.35)",
@@ -295,10 +274,20 @@ export function FloatingWidget() {
       </div>
 
       {/* ── Pill: smooth scale transition, no bounce ─────────── */}
-      <div className="absolute inset-x-0 bottom-0 flex items-end justify-center z-10">
+      <div
+        className="absolute inset-x-0 bottom-0 flex items-end justify-center z-10"
+        style={{ pointerEvents: "none" }}
+      >
         <div
           className="flex items-center justify-center rounded-full border border-white/40 shadow-lg shadow-black/30 backdrop-blur-xl bg-black/80 w-[80px] h-[20px]"
+          onMouseEnter={IS_MAC ? undefined : handleEnter}
+          onMouseLeave={IS_MAC ? undefined : handleLeave}
+          onMouseDown={handleMouseDown}
+          onMouseUp={handleMouseUp}
+          onContextMenu={handleContextMenu}
           style={{
+            pointerEvents: isFullscreen ? "none" : "auto",
+            cursor: "default",
             transform: expanded ? "scale(1)" : "scaleX(0.5) scaleY(0.5)",
             transformOrigin: "bottom center",
             transition: `transform ${DURATION} ${EASE_OUT}`,
@@ -314,3 +303,5 @@ export function FloatingWidget() {
     </div>
   );
 }
+
+
