@@ -36,6 +36,14 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Download Windows External Binaries
+        shell: pwsh
+        run: |
+          Write-Host "Downloading LFS binaries from dependencies release to bypass LFS quota..."
+          Invoke-WebRequest -Uri "https://github.com/AreKS103/Furo/releases/download/dependencies-v1/windows-whisper-binaries.zip" -OutFile "windows-whisper-binaries.zip"
+          Expand-Archive "windows-whisper-binaries.zip" -DestinationPath "src-tauri/binaries" -Force
+          Remove-Item "windows-whisper-binaries.zip"
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
