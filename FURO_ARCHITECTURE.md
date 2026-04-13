@@ -314,3 +314,15 @@ Pre-install hook (`src-tauri/windows/hooks.nsh`) kills `whisper-server.exe` and 
 - **Filler regex**: Strips "like" everywhere (including legitimate uses). Stutter dedup strips "bye bye", "go go", etc.
 - **Settings write amplification**: Every `set()` serializes full JSON. Fine for rare changes.
 - **objc warnings**: `objc` v0.2.7 macro expansions emit many `unexpected_cfgs` — cosmetic only, not errors.
+
+### OS-Level Window Hit-Testing Fix (Windows & macOS)
+To prevent transparent Tauri Webview background regions from capturing mouse clicks intended for applications beneath Furo, the window natively resizes dynamically at the OS level instead of using CSS `pointer-events: none` on large transparent surfaces alone.
+- The Tauri OS window starts at `80×62` to accommodate the popup box, but this caused the entire 62px-tall invisible area to block mouse clicks above the pill.
+- **Fix**: The floating widget window is dynamically resized via `widget_set_size` IPC from `FloatingWidget.tsx` based on popup state:
+  - **Popup closed**: window shrinks to `80×20` (exact pill height) after a 150ms delay to let CSS fade-out animation finish first.
+  - **Popup opened**: window instantly grows to `80×62` before the CSS animation starts so the popup doesn't clip.
+- On Windows, CSS `transform: scale()` does NOT shrink the OS hit-box (WebView2 uses unscaled layout bounds). To fix this, the interactive `onMouseEnter/Leave` handlers sit on a transparent overlay `div` that explicitly sets `width/height` in pixels matching the visual pill size, rather than inheriting from the scaled parent.
+- This ensures transparent bounding areas outside the pill visual don't block interaction with the user's desktop.
+
+### FloatingWidget Popup Animation
+The right-click popup menu uses CSS `transform: translate + scale` for a smooth "ease up" animation. It does NOT use `clip-path` (which caused a "folding/wipe" visual). The popup animates from `translateY(15px) scale(0.9)` (hidden) to `translateY(0) scale(1)` (visible), with `opacity` in sync. `transformOrigin: "bottom center"` anchors the scale to the pill edge.

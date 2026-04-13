@@ -61,9 +61,18 @@ jobs:
 
       - name: List artifacts
         if: always()
+        continue-on-error: true
         shell: pwsh
         run: |
-          Get-ChildItem -Path "src-tauri\target\release\bundle\nsis" -Recurse | Format-Table Name, Length
+          if (Test-Path "src-tauri\target\release\bundle") {
+            Get-ChildItem -Path "src-tauri\target\release\bundle" -Recurse | Format-Table Name, Length
+          } else {
+            Write-Warning "Bundle directory does not exist — Tauri build likely failed above."
+            Write-Host "Contents of src-tauri\target\release (if it exists):"
+            if (Test-Path "src-tauri\target\release") {
+              Get-ChildItem -Path "src-tauri\target\release" -Depth 1 | Format-Table Name, Length
+            }
+          }
 
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4

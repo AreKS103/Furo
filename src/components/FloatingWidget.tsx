@@ -97,6 +97,28 @@ export function FloatingWidget() {
   const expanded = isActive || isHovered || showPopup;
   const displayText = lastText || persistedText;
 
+  // ── Dynamic window resize for hit-testing ─────────────────────
+  useEffect(() => {
+    if (!IS_TAURI) return;
+    const targetWidth = 80;
+    // When the popup closes, the pill is max 20px tall!
+    const targetHeight = showPopup ? 62 : 20;
+
+    let timer: ReturnType<typeof setTimeout>;
+    if (showPopup) {
+      // Instantly grow before the animation starts so it doesn't clip
+      invoke("widget_set_size", { width: targetWidth, height: targetHeight }).catch(() => {});
+    } else {
+      // Wait for the popup slide-down/fade animation to finish, then shrink the OS window
+      timer = setTimeout(() => {
+        invoke("widget_set_size", { width: targetWidth, height: targetHeight }).catch(() => {});
+      }, 150); // Matches DURATION of 150ms
+    }
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
+  }, [showPopup]);
+
   // ── Setup: dark mode, overflow visible, load history ──────────
   useEffect(() => {
     document.documentElement.classList.add("dark");
@@ -246,14 +268,14 @@ export function FloatingWidget() {
     >
       {/* ── Popup box: reveals bottom-first (grows out of pill top) ── */}
       <div
-        className="absolute left-1/2 w-[44px] h-[36px] rounded-2xl border border-white/40 backdrop-blur-xl bg-black/80 shadow-lg shadow-black/30 cursor-pointer select-none flex items-center justify-center"
+        className="absolute left-1/2 w-[44px] h-[36px] rounded-xl border border-white/40 backdrop-blur-xl bg-black/80 shadow-lg shadow-black/30 cursor-pointer select-none flex items-center justify-center"
         style={{
-          bottom: "22px",
+          bottom: "28px",
             transform: showPopup ? "translateX(-50%) translateY(0) scale(1)" : "translateX(-50%) translateY(15px) scale(0.9)",
             opacity: showPopup ? 1 : 0,
             // Slide up and fade in instead of folding
             transformOrigin: "bottom center",
-            // No resize delay needed — window is always 62px tall, animation is pure CSS
+            // The OS window resizes dynamically when the popup opens/closes!
             transition: showPopup
               ? `opacity ${DURATION} ${EASE_OUT}, transform ${DURATION} ${EASE_OUT}`
                 : `opacity 180ms ${EASE_OUT}, transform 180ms ${EASE_OUT}`,
@@ -278,16 +300,26 @@ export function FloatingWidget() {
         className="absolute inset-x-0 bottom-0 flex items-end justify-center z-10"
         style={{ pointerEvents: "none" }}
       >
+        {/* Exact hit box for Windows pass-through */}
         <div
-          className="flex items-center justify-center rounded-full border border-white/40 shadow-lg shadow-black/30 backdrop-blur-xl bg-black/80 w-[80px] h-[20px]"
+          className="absolute bottom-0 z-20"
+          style={{
+            width: expanded ? 80 : 40,
+            height: expanded ? 20 : 10,
+            pointerEvents: isFullscreen ? "none" : "auto",
+            cursor: "default",
+            transition: `width ${DURATION} ${EASE_OUT}, height ${DURATION} ${EASE_OUT}`,
+          }}
           onMouseEnter={IS_MAC ? undefined : handleEnter}
           onMouseLeave={IS_MAC ? undefined : handleLeave}
           onMouseDown={handleMouseDown}
           onMouseUp={handleMouseUp}
           onContextMenu={handleContextMenu}
+        />
+        <div
+          className="flex items-center justify-center rounded-full border border-white/40 shadow-lg shadow-black/30 backdrop-blur-xl bg-black/80 w-[80px] h-[20px]"
           style={{
-            pointerEvents: isFullscreen ? "none" : "auto",
-            cursor: "default",
+            pointerEvents: "none",
             transform: expanded ? "scale(1)" : "scaleX(0.5) scaleY(0.5)",
             transformOrigin: "bottom center",
             transition: `transform ${DURATION} ${EASE_OUT}`,
