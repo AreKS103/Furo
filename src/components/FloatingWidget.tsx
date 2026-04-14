@@ -93,6 +93,7 @@ export function FloatingWidget() {
   const isHoldingRef = useRef(false);
   const lastMonitorIdRef = useRef("");
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const sizeRef = useRef({ w: 44, h: 14 });
 
   const expanded = isActive || isHovered || showPopup;
   const displayText = lastText || persistedText;
@@ -100,16 +101,32 @@ export function FloatingWidget() {
   // ── Dynamic window resize for hit-testing ─────────────────────
   useEffect(() => {
     if (!IS_TAURI) return;
-    const targetWidth = 80;
-    // When the popup closes, the pill is max 20px tall!
-    const targetHeight = showPopup ? 62 : 20;
+
+    let targetWidth: number;
+    let targetHeight: number;
+
+    if (showPopup) {
+      targetWidth = 84;
+      targetHeight = 68; // 28 (bottom gap) + 36 (popup box) + 4 (shadow margin)
+    } else if (expanded) {
+      targetWidth = 84;
+      targetHeight = 24; // Pill is 80x20, giving 4px safe zone for shadow
+    } else {
+      targetWidth = 44;
+      targetHeight = 14; // Shrunk pill is 40x10, so 44x14 creates minimal blocking footprint (e.g. over Figma!)
+    }
+
+    const { w, h } = sizeRef.current;
+    
+    // Growing in any dimension -> instantly resize so CSS animation isn't clipped
+    const isGrowing = targetWidth > w || targetHeight > h;
+    sizeRef.current = { w: targetWidth, h: targetHeight };
 
     let timer: ReturnType<typeof setTimeout>;
-    if (showPopup) {
-      // Instantly grow before the animation starts so it doesn't clip
+    if (isGrowing) {
       invoke("widget_set_size", { width: targetWidth, height: targetHeight }).catch(() => {});
     } else {
-      // Wait for the popup slide-down/fade animation to finish, then shrink the OS window
+      // Shrinking -> wait for CSS transitions (150ms) to finish so we don't visually crop the animation
       timer = setTimeout(() => {
         invoke("widget_set_size", { width: targetWidth, height: targetHeight }).catch(() => {});
       }, 150); // Matches DURATION of 150ms
@@ -117,7 +134,7 @@ export function FloatingWidget() {
     return () => {
       if (timer) clearTimeout(timer);
     };
-  }, [showPopup]);
+  }, [showPopup, expanded]);
 
   // ── Setup: dark mode, overflow visible, load history ──────────
   useEffect(() => {
