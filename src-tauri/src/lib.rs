@@ -917,10 +917,10 @@ pub fn run() {
                 .expect("no primary monitor found");
             let screen_size = monitor.size();
             let scale = monitor.scale_factor();
-            // Start at the minimum collapsed footprint (44x14) so it doesn't block the screen behind it on launch.
-            // The React `useEffect` dynamically resizes it up to 84x68 as needed.
-            let widget_w: f64 = 44.0;
-            let widget_h: f64 = 14.0;
+            // Start at the minimum collapsed footprint (40x10) so it doesn't block the screen behind it on launch.
+            // The React `useEffect` dynamically resizes it up to 80x64 as needed.
+            let widget_w: f64 = 40.0;
+            let widget_h: f64 = 10.0;
             let x = (screen_size.width as f64 / scale - widget_w) / 2.0;
             // macOS Dock occupies ~70-90px at bottom; use a larger offset so
             // the pill isn't hidden behind it.

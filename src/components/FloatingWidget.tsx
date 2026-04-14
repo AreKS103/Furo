@@ -93,7 +93,7 @@ export function FloatingWidget() {
   const isHoldingRef = useRef(false);
   const lastMonitorIdRef = useRef("");
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const sizeRef = useRef({ w: 44, h: 14 });
+  const sizeRef = useRef({ w: 40, h: 10 });
 
   const expanded = isActive || isHovered || showPopup;
   const displayText = lastText || persistedText;
@@ -106,14 +106,14 @@ export function FloatingWidget() {
     let targetHeight: number;
 
     if (showPopup) {
-      targetWidth = 84;
-      targetHeight = 68; // 28 (bottom gap) + 36 (popup box) + 4 (shadow margin)
+      targetWidth = 80;
+      targetHeight = 64; // 28 (bottom gap) + 36 (popup box height)
     } else if (expanded) {
-      targetWidth = 84;
-      targetHeight = 24; // Pill is 80x20, giving 4px safe zone for shadow
+      targetWidth = 80;
+      targetHeight = 20; // Expanded pill is exactly 80x20
     } else {
-      targetWidth = 44;
-      targetHeight = 14; // Shrunk pill is 40x10, so 44x14 creates minimal blocking footprint (e.g. over Figma!)
+      targetWidth = 40;
+      targetHeight = 10; // Shrunk pill is exactly 40x10
     }
 
     const { w, h } = sizeRef.current;
