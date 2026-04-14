@@ -29,3 +29,6 @@ desktop.ini
 
 # ── Lock files managed by package manager ───────────────
 # Keep package-lock.json tracked (needed for npm ci)
+
+windows-whisper-binaries.zip
+test_zip/
