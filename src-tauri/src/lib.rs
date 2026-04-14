@@ -29,6 +29,12 @@ use crate::hotkey::REBIND_MODE_ACTIVE;
 
 use tauri_plugin_autostart::MacosLauncher;
 
+/// Shared flag so the hover tracker knows whether the popup box is open.
+/// When closed, the exit zone is tight around the pill. When open, it
+/// covers the full window so the user can reach the popup.
+static WIDGET_POPUP_OPEN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 // ── macOS: CoreGraphics cursor position for widget hover tracking ─────────
 // WKWebView does not receive mousemove events when another application is the
 // key window. DOM onMouseEnter/Leave are therefore dead unless Furo is
@@ -167,15 +173,20 @@ fn start_widget_hover_tracker(widget: tauri::WebviewWindow) {
 
 #[cfg(target_os = "windows")]
 fn start_widget_hover_tracker_win(widget: tauri::WebviewWindow) {
+    use std::sync::atomic::Ordering;
     use windows::Win32::Foundation::POINT;
     use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
-    const POLL_MS: u64 = 50;
-    const PILL_HALF_W: f64 = 20.0; // half of 40 px collapsed pill
-    const PILL_H: f64 = 10.0;      // collapsed pill height
-    const Y_PAD_TOP: f64 = 30.0;   // tolerance above pill
-    const Y_PAD_BOT: f64 = 10.0;
-    const EXIT_PAD: f64 = 10.0;    // exit-zone jitter margin
+    const POLL_MS: u64 = 30;       // faster polling → snappier response
+    const PILL_HALF_W: f64 = 22.0; // half of 40px pill + 2px tolerance
+    const PILL_H: f64 = 12.0;      // collapsed pill height + 2px tolerance
+    const Y_PAD_TOP: f64 = 6.0;    // small tolerance above pill for approach
+    const Y_PAD_BOT: f64 = 2.0;    // tight: user exits downward fast
+    const EXIT_PAD: f64 = 2.0;     // jitter margin
+    // When expanded (no popup), the exit zone covers the expanded pill area.
+    // Expanded pill is 80×20 at bottom-center of the 80×64 window.
+    const EXPANDED_PILL_H: f64 = 24.0; // 20px pill + 4px buffer
+    const EXPANDED_PILL_HALF_W: f64 = 42.0; // 40px half + 2px buffer
 
 
     std::thread::Builder::new()
@@ -211,18 +222,29 @@ fn start_widget_hover_tracker_win(widget: tauri::WebviewWindow) {
                 let half_w = PILL_HALF_W * scale;
                 let pill_h = PILL_H * scale;
 
-                // Adjust these margins to cover the 40x10 pill gracefully
+                // Activation: tight around the collapsed pill at bottom-center
                 let in_activation =
-                    (cursor.x as f64 - center_x).abs() <= half_w + (EXIT_PAD * scale)
+                    (cursor.x as f64 - center_x).abs() <= half_w
                         && cursor.y as f64 >= bottom_phys - pill_h - (Y_PAD_TOP * scale)
                         && cursor.y as f64 <= bottom_phys + (Y_PAD_BOT * scale);
 
+                // Exit zone depends on whether the popup is open.
+                let popup_open = WIDGET_POPUP_OPEN.load(Ordering::Relaxed);
                 let ep = EXIT_PAD * scale;
-                let in_exit =
+                let in_exit = if popup_open {
+                    // Popup open → full window bounds so user can reach the box
                     cursor.x as f64 >= wx - ep
                         && cursor.x as f64 <= wx + ww + ep
                         && cursor.y as f64 >= wy - ep
-                        && cursor.y as f64 <= wy + wh + ep;
+                        && cursor.y as f64 <= bottom_phys + ep
+                } else {
+                    // Popup closed → tight around expanded pill at bottom-center
+                    let exp_hw = EXPANDED_PILL_HALF_W * scale;
+                    let exp_h = EXPANDED_PILL_H * scale;
+                    (cursor.x as f64 - center_x).abs() <= exp_hw + ep
+                        && cursor.y as f64 >= bottom_phys - exp_h - ep
+                        && cursor.y as f64 <= bottom_phys + ep
+                };
 
                 let is_hovering = if was_hovering { in_exit } else { in_activation };
 
@@ -938,6 +960,17 @@ fn widget_reposition(app: tauri::AppHandle, x: i32, y: i32) {
     let _ = win.set_position(PhysicalPosition::new(x, y));
 }
 
+#[tauri::command]
+fn set_click_through(window: tauri::Window, ignore: bool) {
+    // This tells the OS to ignore clicks on transparent areas of the window
+    window.set_ignore_cursor_events(ignore).unwrap();
+}
+
+#[tauri::command]
+fn widget_set_popup(open: bool) {
+    WIDGET_POPUP_OPEN.store(open, std::sync::atomic::Ordering::Relaxed);
+}
+
 // ── Tray menu
 
 fn build_tray_menu(app: &tauri::App) -> Result<tauri::menu::Menu<tauri::Wry>, Box<dyn std::error::Error>> {
@@ -976,8 +1009,11 @@ pub fn run() {
             retry_hotkey_listener,
             widget_hold_start,
             widget_hold_release,
+            widget_set_size,
             widget_reposition,
             repaste_last,
+            set_click_through,
+            widget_set_popup,
         ])
         .setup(|app| {
             let settings = SettingsStore::new(None);
@@ -992,8 +1028,9 @@ pub fn run() {
                 .expect("no primary monitor found");
             let screen_size = monitor.size();
             let scale = monitor.scale_factor();
-            // Start at the minimum collapsed footprint (40x10) so it doesn't block the screen behind it on launch.
-            // Fix window bounds so that animations don't clip
+            // Start at the maximum expanded footprint to prevent flickering.
+            // Width: 80px (max pill width).
+            // Height: 64px (28px for bottom gap + 36px for popup).
             let widget_w: f64 = 80.0;
             let widget_h: f64 = 64.0;
             let x = (screen_size.width as f64 / scale - widget_w) / 2.0;

@@ -33,6 +33,7 @@ const STORE_KEY = "dictations";
 const EASE_OUT = "cubic-bezier(0.25, 0.1, 0.25, 1)";
 const DURATION = "150ms";
 
+
 /* ─── Audio Visualizer Bars ──────────────────────────────────────── */
 const BAR_COUNT = 10;
 
@@ -93,48 +94,22 @@ export function FloatingWidget() {
   const isHoldingRef = useRef(false);
   const lastMonitorIdRef = useRef("");
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const sizeRef = useRef({ w: 40, h: 10 });
 
   const expanded = isActive || isHovered || showPopup;
   const displayText = lastText || persistedText;
 
-  // ── Dynamic window resize for hit-testing ─────────────────────
+  // ── Static Oversized Window (Fixes Flickering) ────────────────
   useEffect(() => {
     if (!IS_TAURI) return;
-
-    let targetWidth: number;
-    let targetHeight: number;
-
-    if (showPopup) {
-      targetWidth = 80;
-      targetHeight = 64; // 28 (bottom gap) + 36 (popup box height)
-    } else if (expanded) {
-      targetWidth = 80;
-      targetHeight = 20; // Expanded pill is exactly 80x20
-    } else {
-      targetWidth = 40;
-      targetHeight = 10; // Shrunk pill is exactly 40x10
-    }
-
-    const { w, h } = sizeRef.current;
     
-    // Growing in any dimension -> instantly resize so CSS animation isn't clipped
-    const isGrowing = targetWidth > w || targetHeight > h;
-    sizeRef.current = { w: targetWidth, h: targetHeight };
+    // Set the Tauri window statically to the max possible bounds:
+    // width: 80px (max expanded pill width)
+    // height: 64px (28px gap + 36px popup height)
+    const targetWidth = 80;
+    const targetHeight = 64;
 
-    let timer: ReturnType<typeof setTimeout>;
-    if (isGrowing) {
-      // invoke("widget_set_size", { width: targetWidth, height: targetHeight }).catch(() => {});
-    } else {
-      // Shrinking -> wait for CSS transitions (150ms) to finish so we don't visually crop the animation
-      timer = setTimeout(() => {
-        // invoke("widget_set_size", { width: targetWidth, height: targetHeight }).catch(() => {});
-      }, 150); // Matches DURATION of 150ms
-    }
-    return () => {
-      if (timer) clearTimeout(timer);
-    };
-  }, [showPopup, expanded]);
+    invoke("widget_set_size", { width: targetWidth, height: targetHeight }).catch(() => {});
+  }, []);
 
   // ── Setup: dark mode, overflow visible, load history ──────────
   useEffect(() => {
@@ -218,25 +193,34 @@ export function FloatingWidget() {
   }, []);
 
   // ── Hover management ──────────────────────────────────────────
+  // Rust-side hover tracker is the sole authority for cursor passthrough
+  // (set_ignore_cursor_events). React only manages visual state here.
+
   const handleEnter = () => {
     if (hoverTimer.current) { clearTimeout(hoverTimer.current); hoverTimer.current = null; }
     setIsHovered(true);
   };
   const handleLeave = () => {
+    if (hoverTimer.current) { clearTimeout(hoverTimer.current); }
     hoverTimer.current = setTimeout(() => {
       setIsHovered(false);
       setShowPopup(false);
+      if (IS_TAURI) invoke("widget_set_popup", { open: false }).catch(() => {});
       if (isHoldingRef.current) {
         isHoldingRef.current = false;
         invoke("widget_hold_release").catch(() => {});
       }
+      hoverTimer.current = null;
     }, 200);
   };
 
-  // macOS: Rust polling thread drives hover since WKWebView doesn't get
-  // mousemove when another app is the key window.
+  // All platforms: Rust polling thread drives hover via `widget-hover` events.
+  // On macOS, WKWebView doesn't get mousemove when another app is key.
+  // On Windows, set_ignore_cursor_events(true) blocks DOM mouse events.
+  // In both cases, the Rust tracker polls GetCursorPos / CGEventGetLocation
+  // and is the sole authority for toggling cursor passthrough + emitting hover.
   useEffect(() => {
-    if (!IS_MAC) return;
+    if (!IS_TAURI) return;
     let unlisten: (() => void) | undefined;
     listen<boolean>("widget-hover", (e) => {
       e.payload ? handleEnter() : handleLeave();
@@ -261,7 +245,11 @@ export function FloatingWidget() {
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    setShowPopup((p) => !p);
+    setShowPopup((prev) => {
+      const next = !prev;
+      if (IS_TAURI) invoke("widget_set_popup", { open: next }).catch(() => {});
+      return next;
+    });
   };
 
   // ── Box click: copy to clipboard only ─────────────────────────
@@ -274,13 +262,17 @@ export function FloatingWidget() {
     setTimeout(() => setCopied(false), 1200);
   };
 
+  //Debug Box//
   return (
     <div
       className="fixed inset-0"
       style={{
         opacity: isFullscreen ? 0 : 1,
-        pointerEvents: "none", // transparent areas are always click-through; children manage their own
+        pointerEvents: "none",
         transition: `opacity 500ms ${EASE_OUT}`,
+        // DEBUG: red zone to visualize Tauri window bounds
+        outline: "2px solid red",
+        background: "rgba(255,0,0,0)",
       }}
     >
       {/* ── Popup box: reveals bottom-first (grows out of pill top) ── */}
@@ -288,14 +280,10 @@ export function FloatingWidget() {
         className="absolute left-1/2 w-[44px] h-[36px] rounded-xl border border-white/40 backdrop-blur-xl bg-black/80 shadow-lg shadow-black/30 cursor-pointer select-none flex items-center justify-center"
         style={{
           bottom: "28px",
-            transform: showPopup ? "translateX(-50%) translateY(0) scale(1)" : "translateX(-50%) translateY(15px) scale(0.9)",
-            opacity: showPopup ? 1 : 0,
-            // Slide up and fade in instead of folding
-            transformOrigin: "bottom center",
-            // The OS window resizes dynamically when the popup opens/closes!
-            transition: showPopup
-              ? `opacity ${DURATION} ${EASE_OUT}, transform ${DURATION} ${EASE_OUT}`
-                : `opacity 180ms ${EASE_OUT}, transform 180ms ${EASE_OUT}`,
+          transform: showPopup ? "translateX(-50%) translateY(0) scale(1)" : "translateX(-50%) translateY(15px) scale(0.9)",
+          opacity: showPopup ? 1 : 0,
+          transformOrigin: "bottom center",
+          transition: `opacity ${DURATION} ${EASE_OUT}, transform ${DURATION} ${EASE_OUT}`,
           pointerEvents: (showPopup && !isFullscreen) ? "auto" : "none",
         }}
         onClick={handleBoxClick}
@@ -334,13 +322,12 @@ export function FloatingWidget() {
           onContextMenu={handleContextMenu}
         />
         <div
-          className="flex items-center justify-center rounded-full border border-white/40 shadow-lg shadow-black/30 backdrop-blur-xl bg-black/80 w-[80px] h-[20px]"
+          className="flex items-center justify-center rounded-full border border-white/40 shadow-lg shadow-black/30 backdrop-blur-xl bg-black/80 shrink-0"
           style={{
             pointerEvents: "none",
-            transform: expanded ? "scale(1)" : "scaleX(0.5) scaleY(0.5)",
-            transformOrigin: "bottom center",
-            transition: `transform ${DURATION} ${EASE_OUT}`,
-            willChange: "transform",
+            width: expanded ? 80 : 40,
+            height: expanded ? 20 : 10,
+            transition: `width ${DURATION} ${EASE_OUT}, height ${DURATION} ${EASE_OUT}`,
           }}
         >
           {/* Visualizer opacity: set directly, no CSS transition to avoid dimming flicker */}
