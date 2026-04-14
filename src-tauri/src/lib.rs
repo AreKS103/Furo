@@ -163,21 +163,7 @@ fn start_widget_hover_tracker(widget: tauri::WebviewWindow) {
 
 // ── Windows cursor-polling hover tracker ─────────────────────────────────
 
-#[cfg(target_os = "windows")]
-fn set_win_click_through(hwnd: windows::Win32::Foundation::HWND, ignore: bool) {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_TRANSPARENT,
-    };
-    unsafe {
-        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
-        let new_ex = if ignore {
-            ex | WS_EX_TRANSPARENT.0 as isize
-        } else {
-            ex & !(WS_EX_TRANSPARENT.0 as isize)
-        };
-        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, new_ex);
-    }
-}
+
 
 #[cfg(target_os = "windows")]
 fn start_widget_hover_tracker_win(widget: tauri::WebviewWindow) {
@@ -191,16 +177,10 @@ fn start_widget_hover_tracker_win(widget: tauri::WebviewWindow) {
     const Y_PAD_BOT: f64 = 10.0;
     const EXIT_PAD: f64 = 10.0;    // exit-zone jitter margin
 
-    let hwnd_raw: isize = match widget.hwnd() {
-        Ok(h) => h.0 as isize,
-        Err(_) => return,
-    };
 
     std::thread::Builder::new()
         .name("furo-widget-hover-win".into())
         .spawn(move || {
-            use windows::Win32::Foundation::HWND;
-            let hwnd = HWND(hwnd_raw as *mut _);
             let mut was_hovering = false;
 
             loop {
@@ -248,7 +228,7 @@ fn start_widget_hover_tracker_win(widget: tauri::WebviewWindow) {
 
                 if is_hovering != was_hovering {
                     was_hovering = is_hovering;
-                    set_win_click_through(hwnd, !is_hovering);
+                    let _ = widget.set_ignore_cursor_events(!is_hovering);
                     let _ = widget.emit("widget-hover", is_hovering);
                 }
             }
