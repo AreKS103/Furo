@@ -77,8 +77,7 @@ unsafe extern "system" fn keyboard_hook_proc(
             const VK_LWIN: u32 = 0x5B;
             const VK_RWIN: u32 = 0x5C;
             if (vk == VK_LWIN || vk == VK_RWIN)
-                && (super::REBIND_MODE_ACTIVE.load(Ordering::Acquire)
-                    || super::WIN_IS_COMBO_MODIFIER.load(Ordering::Acquire))
+                && super::REBIND_MODE_ACTIVE.load(Ordering::Acquire)
             {
                 return LRESULT(1); // consumed — OS never sees this keystroke
             }
@@ -263,3 +262,4 @@ impl Drop for HotkeyListener {
 fn GetCurrentThreadId_compat() -> u32 {
     unsafe { windows::Win32::System::Threading::GetCurrentThreadId() }
 }
+

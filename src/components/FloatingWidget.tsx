@@ -124,11 +124,11 @@ export function FloatingWidget() {
 
     let timer: ReturnType<typeof setTimeout>;
     if (isGrowing) {
-      invoke("widget_set_size", { width: targetWidth, height: targetHeight }).catch(() => {});
+      // invoke("widget_set_size", { width: targetWidth, height: targetHeight }).catch(() => {});
     } else {
       // Shrinking -> wait for CSS transitions (150ms) to finish so we don't visually crop the animation
       timer = setTimeout(() => {
-        invoke("widget_set_size", { width: targetWidth, height: targetHeight }).catch(() => {});
+        // invoke("widget_set_size", { width: targetWidth, height: targetHeight }).catch(() => {});
       }, 150); // Matches DURATION of 150ms
     }
     return () => {

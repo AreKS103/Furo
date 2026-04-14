@@ -993,9 +993,9 @@ pub fn run() {
             let screen_size = monitor.size();
             let scale = monitor.scale_factor();
             // Start at the minimum collapsed footprint (40x10) so it doesn't block the screen behind it on launch.
-            // The React `useEffect` dynamically resizes it up to 80x64 as needed.
-            let widget_w: f64 = 40.0;
-            let widget_h: f64 = 10.0;
+            // Fix window bounds so that animations don't clip
+            let widget_w: f64 = 80.0;
+            let widget_h: f64 = 64.0;
             let x = (screen_size.width as f64 / scale - widget_w) / 2.0;
             // macOS Dock occupies ~70-90px at bottom; use a larger offset so
             // the pill isn't hidden behind it.
@@ -1051,6 +1051,10 @@ pub fn run() {
                     }
                     log::info!("Widget HWND configured with WS_EX_NOACTIVATE.");
                 }
+
+                // Start transparent to clicks — the hover tracker will toggle
+                // this off when the cursor enters the widget hitbox.
+                let _ = _widget.set_ignore_cursor_events(true);
             }
 
             // ── macOS: make the widget a non-activating floating panel ──
@@ -1121,6 +1125,10 @@ pub fn run() {
             // polling thread that emits `widget-hover` Tauri events instead.
             #[cfg(target_os = "macos")]
             start_widget_hover_tracker(_widget.clone());
+
+            // Windows: same cursor-polling hover tracker using GetCursorPos.
+            #[cfg(target_os = "windows")]
+            start_widget_hover_tracker_win(_widget.clone());
 
             // All platforms: poll for fullscreen state and fade the widget
             // when the user watches a video (YouTube, VLC, system viewer, etc.).
