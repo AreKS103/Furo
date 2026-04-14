@@ -37,6 +37,8 @@ jobs:
         uses: actions/checkout@v4
         with:
           lfs: false  # LFS binaries are downloaded manually below to avoid LFS bandwidth quota errors
+
+      - name: Download Windows External Binaries
         shell: pwsh
         run: |
           Write-Host "Downloading LFS binaries from dependencies release to bypass LFS quota..."
@@ -61,6 +63,11 @@ jobs:
           # instead of creating a new 600 MB entry per tag.
           shared-key: rust-windows-x64
           cache-on-failure: false
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Build Tauri (Windows NSIS)
         run: npx tauri build --bundles nsis
 
       - name: List artifacts
