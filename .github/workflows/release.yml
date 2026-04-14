@@ -279,7 +279,7 @@ jobs:
           # Deletes the release body + all its assets, then removes the git tag.
           gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --json tagName \
             --jq '.[].tagName' | while read tag; do
-            if [[ "$tag" != "$CURRENT_TAG" ]]; then
+            if [[ "$tag" != "$CURRENT_TAG" && "$tag" != "dependencies-v1" ]]; then
               echo "Deleting release: $tag"
               gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag || true
             fi
