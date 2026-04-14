@@ -35,8 +35,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Download Windows External Binaries
+        with:
+          lfs: false  # LFS binaries are downloaded manually below to avoid LFS bandwidth quota errors
         shell: pwsh
         run: |
           Write-Host "Downloading LFS binaries from dependencies release to bypass LFS quota..."
@@ -57,12 +57,10 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
-          cache-on-failure: true
-
-      - name: Install frontend dependencies
-        run: npm ci
-
-      - name: Build Tauri (Windows NSIS)
+          # Shared key so every release tag reuses the same cache entry
+          # instead of creating a new 600 MB entry per tag.
+          shared-key: rust-windows-x64
+          cache-on-failure: false
         run: npx tauri build --bundles nsis
 
       - name: List artifacts
@@ -114,7 +112,9 @@ jobs:
         uses: swatinem/rust-cache@v2
         with:
           workspaces: src-tauri -> target
-          cache-on-failure: true
+          # Shared key so every release tag reuses the same cache entry
+          shared-key: rust-macos-arm64
+          cache-on-failure: false
 
       - name: Install system dependencies
         run: |
@@ -376,3 +376,13 @@ jobs:
             artifacts/windows/*
             artifacts/macos/*
             artifacts/latest.json
+
+      - name: Prune stale caches (keep only rust-windows-x64 + rust-macos-arm64)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Delete any cache entry that isn't one of the two shared stable keys.
+          # This prevents per-tag cache sprawl from filling the 10 GB quota.
+          gh cache list --repo "$GITHUB_REPOSITORY" --limit 100 --json id,key \
+            --jq '.[] | select(.key | test("rust-windows-x64|rust-macos-arm64") | not) | .id' \
+            | xargs -r -I{} gh cache delete {} --repo "$GITHUB_REPOSITORY" || true
