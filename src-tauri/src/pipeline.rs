@@ -217,6 +217,7 @@ pub enum RecordingMode {
     None,
     Hold,
     Handsfree,
+    Processing,
 }
 
 // ── Pipeline
@@ -544,7 +545,7 @@ impl FuroPipeline {
         if *mode != RecordingMode::Hold {
             return;
         }
-        *mode = RecordingMode::None;
+        *mode = RecordingMode::Processing;
         drop(mode);
         log::info!("Hold recording stopped — processing.");
         self.stop_and_process();
@@ -561,17 +562,20 @@ impl FuroPipeline {
             if enabled { play_widget_sound(vol); }
         }
         let mut mode = self.recording_mode.lock();
-        if *mode != RecordingMode::None {
+        if *mode == RecordingMode::Hold || *mode == RecordingMode::Handsfree {
             // Toggle off
-            *mode = RecordingMode::None;
+            *mode = RecordingMode::Processing;
             drop(mode);
             log::info!("Hands-free stopped — processing.");
             self.stop_and_process();
-        } else {
+        } else if *mode == RecordingMode::None {
             *mode = RecordingMode::Handsfree;
             drop(mode);
             log::info!("Hands-free recording started.");
             self.start_recording("Hands-free…");
+        } else {
+            log::warn!("Hands-free press ignored — currently processing.");
+            return;
         }
     }
 
@@ -721,6 +725,7 @@ impl FuroPipeline {
                 log::info!("VAD: no speech detected.");
                 self.emit_transcription("");
                 self.emit_status("idle", "");
+                *self.recording_mode.lock() = RecordingMode::None;
                 return;
             }
             let mut flat = Vec::with_capacity(total);
@@ -744,6 +749,7 @@ impl FuroPipeline {
                 log::error!("Transcriber not loaded!");
                 self.emit_error("Transcriber not loaded.");
                 self.emit_status("idle", "");
+                *self.recording_mode.lock() = RecordingMode::None;
                 return;
             }
         };
@@ -794,8 +800,9 @@ impl FuroPipeline {
         }
 
         // Return to idle — only after text is fully injected
-        let mode = *self.recording_mode.lock();
-        if mode == RecordingMode::None {
+        let mut mode = self.recording_mode.lock();
+        if *mode == RecordingMode::Processing {
+            *mode = RecordingMode::None;
             let hold_hk = self.settings.get("hotkey_hold").to_uppercase();
             let hf_hk = self.settings.get("hotkey_handsfree").to_uppercase();
             self.emit_status(
