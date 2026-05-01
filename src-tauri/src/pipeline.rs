@@ -556,21 +556,22 @@ impl FuroPipeline {
             log::warn!("Hands-free press ignored — models still loading.");
             return;
         }
-        {
-            let enabled = self.settings.get("sound_enabled") != "false";
-            let vol = self.settings.get("sound_volume").parse::<f32>().unwrap_or(0.05);
-            if enabled { play_widget_sound(vol); }
-        }
         let mut mode = self.recording_mode.lock();
         if *mode == RecordingMode::Hold || *mode == RecordingMode::Handsfree {
             // Toggle off
             *mode = RecordingMode::Processing;
             drop(mode);
+            let enabled = self.settings.get("sound_enabled") != "false";
+            let vol = self.settings.get("sound_volume").parse::<f32>().unwrap_or(0.05);
+            if enabled { play_widget_sound(vol); }
             log::info!("Hands-free stopped — processing.");
             self.stop_and_process();
         } else if *mode == RecordingMode::None {
             *mode = RecordingMode::Handsfree;
             drop(mode);
+            let enabled = self.settings.get("sound_enabled") != "false";
+            let vol = self.settings.get("sound_volume").parse::<f32>().unwrap_or(0.05);
+            if enabled { play_widget_sound(vol); }
             log::info!("Hands-free recording started.");
             self.start_recording("Hands-free…");
         } else {

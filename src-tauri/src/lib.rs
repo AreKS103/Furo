@@ -308,7 +308,7 @@ mod cg_fullscreen {
     }
 }
 
-/// macOS: returns true if any non-Furo window currently fills the main display.
+/// macOS: returns true if any non-Furo window currently fills any active display.
 #[cfg(target_os = "macos")]
 fn check_fullscreen_active(own_pid: i32) -> bool {
     use std::ffi::{c_char, c_void};
@@ -317,16 +317,43 @@ fn check_fullscreen_active(own_pid: i32) -> bool {
 
     // kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements
     const OPTS: u32 = 1 | 16;
+    const MAX_DISPLAYS: u32 = 16;
+
+    #[link(name = "CoreGraphics", kind = "framework")]
+    extern "C" {
+        fn CGGetActiveDisplayList(
+            max_displays: u32,
+            active_displays: *mut u32,
+            display_count: *mut u32,
+        ) -> i32;
+    }
 
     unsafe {
-        // Get logical bounds of the primary display via CGDisplayBounds.
-        // Available since macOS 10.3; no separate mode query needed.
-        let display_id = CGMainDisplayID();
-        let screen_rect = CGDisplayBounds(display_id);
-        let screen_w = screen_rect.width;
-        let screen_h = screen_rect.height;
+        let mut display_ids = [0u32; MAX_DISPLAYS as usize];
+        let mut display_count = 0u32;
+        let cg_ok = CGGetActiveDisplayList(
+            MAX_DISPLAYS,
+            display_ids.as_mut_ptr(),
+            &mut display_count,
+        ) == 0;
 
-        if screen_w < 1.0 || screen_h < 1.0 {
+        let mut display_rects = Vec::new();
+        if cg_ok {
+            for display_id in display_ids.iter().take(display_count as usize) {
+                let rect = CGDisplayBounds(*display_id);
+                if rect.width >= 1.0 && rect.height >= 1.0 {
+                    display_rects.push(rect);
+                }
+            }
+        }
+        if display_rects.is_empty() {
+            let rect = CGDisplayBounds(CGMainDisplayID());
+            if rect.width >= 1.0 && rect.height >= 1.0 {
+                display_rects.push(rect);
+            }
+        }
+
+        if display_rects.is_empty() {
             return false;
         }
 
@@ -397,8 +424,13 @@ fn check_fullscreen_active(own_pid: i32) -> bool {
                 continue;
             }
 
-            // ── Fullscreen if window fills the display (±2pt tolerance) ──
-            if rect.width >= screen_w - 2.0 && rect.height >= screen_h - 2.0 {
+            // ── Fullscreen if window fills any active display (±2pt tolerance) ──
+            if display_rects.iter().any(|screen| {
+                (rect.x - screen.x).abs() <= 2.0
+                    && (rect.y - screen.y).abs() <= 2.0
+                    && (rect.width - screen.width).abs() <= 2.0
+                    && (rect.height - screen.height).abs() <= 2.0
+            }) {
                 found_fullscreen = true;
                 break 'outer;
             }
@@ -410,24 +442,43 @@ fn check_fullscreen_active(own_pid: i32) -> bool {
     }
 }
 
-/// Windows: returns true if the foreground window fills its entire monitor.
+/// Windows: returns true if any visible non-Furo window fills its monitor.
 #[cfg(target_os = "windows")]
-fn check_fullscreen_active() -> bool {
-    use windows::Win32::Foundation::RECT;
+fn check_fullscreen_active(own_pid: u32) -> bool {
+    use windows::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
     use windows::Win32::Graphics::Gdi::{
         GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
     };
-    use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowRect};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        EnumWindows, GetWindowRect, GetWindowThreadProcessId, IsWindowVisible,
+    };
 
-    unsafe {
-        let hwnd = GetForegroundWindow();
-        if hwnd.0.is_null() {
-            return false;
+    struct FullscreenSearch {
+        own_pid: u32,
+        found: bool,
+    }
+
+    unsafe extern "system" fn enum_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
+        let search = &mut *(lparam.0 as *mut FullscreenSearch);
+        if search.found || hwnd.0.is_null() || !IsWindowVisible(hwnd).as_bool() {
+            return BOOL(1);
+        }
+
+        let mut pid = 0u32;
+        GetWindowThreadProcessId(hwnd, Some(&mut pid as *mut u32));
+        if pid == 0 || pid == search.own_pid {
+            return BOOL(1);
         }
 
         let mut wr = RECT::default();
         if GetWindowRect(hwnd, &mut wr).is_err() {
-            return false;
+            return BOOL(1);
+        }
+
+        let w = wr.right - wr.left;
+        let h = wr.bottom - wr.top;
+        if w < 640 || h < 480 {
+            return BOOL(1);
         }
 
         let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
@@ -436,20 +487,29 @@ fn check_fullscreen_active() -> bool {
             ..Default::default()
         };
         if !GetMonitorInfoW(monitor, &mut mi).as_bool() {
-            return false;
+            return BOOL(1);
         }
 
         let mr = mi.rcMonitor;
-        // Fullscreen: window rect equals monitor rect exactly.
-        // Also require minimum monitor-sized dimensions to filter out tiny windows.
-        let w = wr.right - wr.left;
-        let h = wr.bottom - wr.top;
-        w >= 640
-            && h >= 480
-            && wr.left == mr.left
+        if wr.left == mr.left
             && wr.top == mr.top
             && wr.right == mr.right
             && wr.bottom == mr.bottom
+        {
+            search.found = true;
+            return BOOL(0);
+        }
+
+        BOOL(1)
+    }
+
+    unsafe {
+        let mut search = FullscreenSearch {
+            own_pid,
+            found: false,
+        };
+        let _ = EnumWindows(Some(enum_window), LPARAM(&mut search as *mut _ as isize));
+        search.found
     }
 }
 
@@ -464,6 +524,9 @@ fn start_fullscreen_tracker(widget: tauri::WebviewWindow) {
             #[cfg(target_os = "macos")]
             let own_pid = std::process::id() as i32;
 
+            #[cfg(target_os = "windows")]
+            let own_pid = std::process::id();
+
             let mut was_fullscreen = false;
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
@@ -472,7 +535,7 @@ fn start_fullscreen_tracker(widget: tauri::WebviewWindow) {
                 let is_fs = check_fullscreen_active(own_pid);
 
                 #[cfg(target_os = "windows")]
-                let is_fs = check_fullscreen_active();
+                let is_fs = check_fullscreen_active(own_pid);
 
                 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
                 let is_fs = false;
@@ -963,7 +1026,9 @@ fn widget_reposition(app: tauri::AppHandle, x: i32, y: i32) {
 #[tauri::command]
 fn set_click_through(window: tauri::Window, ignore: bool) {
     // This tells the OS to ignore clicks on transparent areas of the window
-    window.set_ignore_cursor_events(ignore).unwrap();
+    if let Err(e) = window.set_ignore_cursor_events(ignore) {
+        log::warn!("set_click_through failed: {}", e);
+    }
 }
 
 #[tauri::command]

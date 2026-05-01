@@ -24,6 +24,11 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use crate::config;
 
+static CLIPBOARD_INJECTION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+const CLIPBOARD_VERIFY_RETRIES: usize = 5;
+const CLIPBOARD_VERIFY_DELAY_MS: u64 = 20;
+const CLIPBOARD_RESTORE_DELAY_MS: u64 = 900;
+
 // ── Focus tracker globals ─────────────────────────────────────────────────
 /// Our own process ID — set once in `start_focus_tracker`. 0 = not yet set.
 static OWN_PID: AtomicU32 = AtomicU32::new(0);
@@ -185,6 +190,61 @@ fn send_ctrl_v() {
     }
 }
 
+fn read_clipboard_text() -> Option<String> {
+    arboard::Clipboard::new()
+        .ok()
+        .and_then(|mut cb| cb.get_text().ok())
+}
+
+fn set_clipboard_text(text: &str) -> bool {
+    for attempt in 0..CLIPBOARD_VERIFY_RETRIES {
+        match arboard::Clipboard::new() {
+            Ok(mut clipboard) => {
+                if let Err(e) = clipboard.set_text(text) {
+                    log::warn!("Clipboard set_text failed on attempt {}: {}", attempt + 1, e);
+                } else if read_clipboard_text().as_deref() == Some(text) {
+                    return true;
+                } else {
+                    log::warn!("Clipboard verification failed on attempt {}.", attempt + 1);
+                }
+            }
+            Err(e) => {
+                log::warn!("Failed to open clipboard on attempt {}: {}", attempt + 1, e);
+            }
+        }
+        thread::sleep(Duration::from_millis(CLIPBOARD_VERIFY_DELAY_MS));
+    }
+    false
+}
+
+fn restore_clipboard_if_unchanged(expected: &str, previous: Option<String>) {
+    if read_clipboard_text().as_deref() != Some(expected) {
+        log::debug!("Clipboard changed after paste; preserving user's newer clipboard content.");
+        return;
+    }
+
+    if let Ok(mut cb) = arboard::Clipboard::new() {
+        match previous {
+            Some(prev) => {
+                let _ = cb.set_text(prev);
+            }
+            None => {
+                let _ = cb.clear();
+            }
+        }
+    }
+}
+
+fn schedule_clipboard_restore(expected: String, previous: Option<String>) {
+    let _ = thread::Builder::new()
+        .name("furo-clipboard-restore".into())
+        .spawn(move || {
+            thread::sleep(Duration::from_millis(CLIPBOARD_RESTORE_DELAY_MS));
+            let _clipboard_guard = CLIPBOARD_INJECTION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            restore_clipboard_if_unchanged(&expected, previous);
+        });
+}
+
 /// Bring the target window to the foreground using AttachThreadInput.
 ///
 /// Returns `true` on success, `false` if the window is gone.
@@ -278,28 +338,20 @@ pub fn type_text(text: &str, target: &CapturedTarget) -> bool {
         return true;
     }
 
+    let _clipboard_guard = CLIPBOARD_INJECTION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
     let mut output = text.to_string();
     if config::INSERT_TRAILING_SPACE {
         output.push(' ');
     }
 
     // Step 1: Save previous clipboard content so we can restore it after typing.
-    let prev_clipboard: Option<String> = arboard::Clipboard::new()
-        .ok()
-        .and_then(|mut cb| cb.get_text().ok());
+    let prev_clipboard = read_clipboard_text();
 
     // Put transcription text on clipboard for Ctrl+V injection.
-    match arboard::Clipboard::new() {
-        Ok(mut clipboard) => {
-            if let Err(e) = clipboard.set_text(&output) {
-                log::warn!("Clipboard set_text failed: {}", e);
-                return false;
-            }
-        }
-        Err(e) => {
-            log::warn!("Failed to open clipboard: {}", e);
-            return false;
-        }
+    if !set_clipboard_text(&output) {
+        log::warn!("Could not place transcription on clipboard after retries.");
+        return false;
     }
 
     // Step 2: Validate the target window still exists
@@ -326,18 +378,21 @@ pub fn type_text(text: &str, target: &CapturedTarget) -> bool {
     // Step 4: Small delay for the window to settle, then Ctrl+V
     thread::sleep(Duration::from_millis(config::TYPING_FOCUS_DELAY_MS));
 
+    // Re-assert the transcription immediately before paste. This closes the
+    // timing hole where another clipboard write between focus restore and
+    // SendInput would cause the target app to paste stale clipboard content.
+    if !set_clipboard_text(&output) {
+        log::warn!("Could not re-assert transcription on clipboard before paste.");
+        return false;
+    }
+
     send_ctrl_v();
     log::debug!("Ctrl+V sent to 0x{:X} via SendInput.", target.parent);
 
-    // Restore the clipboard to whatever it held before dictation so the
-    // transcription text does not linger there.
-    thread::sleep(Duration::from_millis(200));
-    if let Ok(mut cb) = arboard::Clipboard::new() {
-        match prev_clipboard {
-            Some(prev) => { let _ = cb.set_text(&prev); }
-            None       => { let _ = cb.clear(); }
-        }
-    }
+    // Restore later on a detached path so the dictation pipeline can return to
+    // ready as soon as the paste is sent. The restore preserves any newer user
+    // clipboard content if it changed after paste.
+    schedule_clipboard_restore(output, prev_clipboard);
 
     true
 }

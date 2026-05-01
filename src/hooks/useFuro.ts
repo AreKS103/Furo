@@ -31,9 +31,18 @@ export function useFuro(): SocketState {
 
   useEffect(() => {
     const unlisteners: UnlistenFn[] = [];
+    let cancelled = false;
+
+    const addUnlistener = (unlisten: UnlistenFn) => {
+      if (cancelled) {
+        unlisten();
+      } else {
+        unlisteners.push(unlisten);
+      }
+    };
 
     const setup = async () => {
-      unlisteners.push(
+      addUnlistener(
         await listen<{ state: string; message: string }>(
           "furo://status",
           (event) => {
@@ -45,13 +54,13 @@ export function useFuro(): SocketState {
         )
       );
 
-      unlisteners.push(
+      addUnlistener(
         await listen<{ text: string }>("furo://transcription", (event) => {
           setLastText(event.payload.text ?? "");
         })
       );
 
-      unlisteners.push(
+      addUnlistener(
         await listen<{ data: Record<string, string> }>(
           "furo://settings",
           (event) => {
@@ -60,13 +69,13 @@ export function useFuro(): SocketState {
         )
       );
 
-      unlisteners.push(
+      addUnlistener(
         await listen<{ level: number }>("furo://volume", (event) => {
           setVolume(event.payload.level ?? 0);
         })
       );
 
-      unlisteners.push(
+      addUnlistener(
         await listen<{ message: string }>("furo://error", (event) => {
           setLastError(event.payload.message ?? "An error occurred.");
         })
@@ -75,7 +84,7 @@ export function useFuro(): SocketState {
       // Fetch initial settings
       try {
         const data = await invoke<Record<string, string>>("get_settings");
-        setSettings(data);
+        if (!cancelled) setSettings(data);
       } catch (e) {
         console.error("Failed to fetch initial settings:", e);
       }
@@ -84,6 +93,7 @@ export function useFuro(): SocketState {
     setup();
 
     return () => {
+      cancelled = true;
       for (const unlisten of unlisteners) {
         unlisten();
       }

@@ -159,6 +159,8 @@ export function FloatingWidget() {
   useEffect(() => {
     if (!IS_TAURI) return;
     const checkMonitor = async () => {
+      if (isFullscreen) return;
+
       try {
         const { availableMonitors, cursorPosition, getCurrentWindow } =
           await import("@tauri-apps/api/window");
@@ -190,7 +192,7 @@ export function FloatingWidget() {
     };
     const timer = setInterval(checkMonitor, 500);
     return () => clearInterval(timer);
-  }, []);
+  }, [isFullscreen]);
 
   // ── Hover management ──────────────────────────────────────────
   // Rust-side hover tracker is the sole authority for cursor passthrough
@@ -262,7 +264,6 @@ export function FloatingWidget() {
     setTimeout(() => setCopied(false), 1200);
   };
 
-  //Debug Box//
   return (
     <div
       className="fixed inset-0"
@@ -270,8 +271,6 @@ export function FloatingWidget() {
         opacity: isFullscreen ? 0 : 1,
         pointerEvents: "none",
         transition: `opacity 500ms ${EASE_OUT}`,
-        // DEBUG: red zone to visualize Tauri window bounds
-        outline: "2px solid red",
         background: "rgba(255,0,0,0)",
       }}
     >

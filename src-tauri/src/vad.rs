@@ -17,9 +17,7 @@
 mod ort_impl {
     use ort::session::Session;
     use ort::value::Tensor;
-    use parking_lot::Mutex;
     use std::path::PathBuf;
-    use std::sync::Arc;
 
     use crate::config;
 
@@ -28,8 +26,8 @@ mod ort_impl {
         session: Session,
         threshold: f32,
         sample_rate: i64,
-        state: Arc<Mutex<Vec<f32>>>,
-        context: Arc<Mutex<Vec<f32>>>,
+        state: Vec<f32>,
+        context: Vec<f32>,
     }
 
     impl VoiceActivityDetector {
@@ -61,14 +59,14 @@ mod ort_impl {
                 session,
                 threshold,
                 sample_rate: config::AUDIO_RATE as i64,
-                state: Arc::new(Mutex::new(vec![0.0_f32; 2 * 1 * 128])),
-                context: Arc::new(Mutex::new(vec![0.0_f32; 64])),
+                state: vec![0.0_f32; 2 * 1 * 128],
+                context: vec![0.0_f32; 64],
             })
         }
 
-        pub fn reset(&self) {
-            self.state.lock().fill(0.0);
-            self.context.lock().fill(0.0);
+        pub fn reset(&mut self) {
+            self.state.fill(0.0);
+            self.context.fill(0.0);
         }
 
         pub fn set_threshold(&mut self, threshold: f32) {
@@ -81,21 +79,17 @@ mod ort_impl {
                 .map(|&s| s as f32 / 32768.0)
                 .collect();
 
-            let context = self.context.lock().clone();
-            let mut input_data = Vec::with_capacity(context.len() + chunk_f32.len());
-            input_data.extend_from_slice(&context);
+            let mut input_data = Vec::with_capacity(self.context.len() + chunk_f32.len());
+            input_data.extend_from_slice(&self.context);
             input_data.extend_from_slice(&chunk_f32);
 
-            {
-                let mut ctx = self.context.lock();
-                let total = input_data.len();
-                ctx.clear();
-                ctx.extend_from_slice(&input_data[total.saturating_sub(64)..]);
-            }
+            let total = input_data.len();
+            self.context.clear();
+            self.context.extend_from_slice(&input_data[total.saturating_sub(64)..]);
 
             let input_len = input_data.len();
             let sr_data = vec![self.sample_rate];
-            let state_data = self.state.lock().clone();
+            let state_data = self.state.clone();
 
             let input_tensor = match Tensor::from_array(([1usize, input_len], input_data.into_boxed_slice())) {
                 Ok(t) => t,
@@ -142,7 +136,8 @@ mod ort_impl {
             };
 
             if let Ok((_, data)) = result["stateN"].try_extract_tensor::<f32>() {
-                *self.state.lock() = data.to_vec();
+                self.state.clear();
+                self.state.extend_from_slice(data);
             }
 
             speech_prob >= self.threshold

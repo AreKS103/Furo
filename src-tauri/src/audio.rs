@@ -7,7 +7,6 @@
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{Device, SampleFormat, Stream, StreamConfig};
 use parking_lot::Mutex;
-use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -28,7 +27,6 @@ pub struct MicInfo {
 /// Audio recorder using cpal. Captures raw PCM i16 at 16 kHz mono.
 pub struct AudioRecorder {
     stream: Option<Stream>,
-    frames: Arc<Mutex<VecDeque<Vec<i16>>>>,
     recording: Arc<AtomicBool>,
 }
 
@@ -42,7 +40,6 @@ impl AudioRecorder {
     pub fn new() -> Self {
         Self {
             stream: None,
-            frames: Arc::new(Mutex::new(VecDeque::new())),
             recording: Arc::new(AtomicBool::new(false)),
         }
     }
@@ -91,10 +88,8 @@ impl AudioRecorder {
         );
 
         // Reset state
-        self.frames.lock().clear();
         self.recording.store(true, Ordering::SeqCst);
 
-        let frames = Arc::clone(&self.frames);
         let recording = Arc::clone(&self.recording);
 
         // Volume metering state (captured by closure)
@@ -113,7 +108,6 @@ impl AudioRecorder {
         // Shared processing closure — takes already-converted i16 mono data
         // Wrapped in Arc so we can share it between potential match arms.
         let process_audio = Arc::new({
-            let frames = Arc::clone(&frames);
             let recording = Arc::clone(&recording);
             let last_volume_time = Arc::clone(&last_volume_time);
             let noise_floor = Arc::clone(&noise_floor);
@@ -251,7 +245,6 @@ impl AudioRecorder {
                 }
                 };
 
-                frames.lock().push_back(output.clone());
                 on_raw_chunk(&output);
 
                 // Throttled volume computation
@@ -330,23 +323,13 @@ impl AudioRecorder {
         Ok(())
     }
 
-    /// Stop recording and return all captured audio as concatenated i16 samples.
-    pub fn stop(&mut self) -> Vec<i16> {
+    /// Stop recording and release the input stream.
+    pub fn stop(&mut self) {
         self.recording.store(false, Ordering::SeqCst);
 
         // Drop the stream to release the audio device.
         self.stream = None;
-
-        let mut frames = self.frames.lock();
-        let total_samples: usize = frames.iter().map(|f| f.len()).sum();
-        let mut all = Vec::with_capacity(total_samples);
-        for frame in frames.drain(..) {
-            all.extend_from_slice(&frame);
-        }
-
-        let duration_s = all.len() as f32 / (config::AUDIO_RATE as f32);
-        log::debug!("Recording stopped. Captured {:.2}s of audio.", duration_s);
-        all
+        log::debug!("Recording stopped.");
     }
 
     /// Check if recording is active.

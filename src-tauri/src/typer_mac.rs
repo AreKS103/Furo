@@ -19,6 +19,11 @@ use objc::{class, msg_send, sel, sel_impl};
 use crate::config;
 use super::CapturedTarget;
 
+static CLIPBOARD_INJECTION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+const CLIPBOARD_VERIFY_RETRIES: usize = 5;
+const CLIPBOARD_VERIFY_DELAY_MS: u64 = 20;
+const CLIPBOARD_RESTORE_DELAY_MS: u64 = 900;
+
 // ── macOS virtual key codes ───────────────────────────────────────────────
 const KVK_COMMAND: u16 = 0x37;
 const KVK_ANSI_V: u16 = 0x09;
@@ -66,7 +71,7 @@ pub fn start_focus_tracker() {
         .spawn(move || {
             log::info!("Focus tracker started (own pid={}).", own_pid);
             loop {
-                thread::sleep(Duration::from_millis(200));
+                thread::sleep(Duration::from_millis(100));
                 let _ = std::panic::catch_unwind(|| unsafe {
                     let pool: *mut Object = msg_send![class!(NSAutoreleasePool), new];
                     let workspace: *mut Object =
@@ -167,6 +172,75 @@ fn send_cmd_v() {
     }
 }
 
+fn read_clipboard_text() -> Option<String> {
+    std::process::Command::new("pbpaste")
+        .output()
+        .ok()
+        .and_then(|o| if o.status.success() { String::from_utf8(o.stdout).ok() } else { None })
+}
+
+fn write_clipboard_text(text: &str) -> bool {
+    use std::io::Write;
+
+    for attempt in 0..CLIPBOARD_VERIFY_RETRIES {
+        let mut child = match std::process::Command::new("pbcopy")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+        {
+            Ok(c) => c,
+            Err(e) => {
+                log::warn!("[typer] pbcopy spawn failed on attempt {}: {}", attempt + 1, e);
+                thread::sleep(Duration::from_millis(CLIPBOARD_VERIFY_DELAY_MS));
+                continue;
+            }
+        };
+
+        if let Some(ref mut stdin) = child.stdin {
+            if let Err(e) = stdin.write_all(text.as_bytes()) {
+                log::warn!("[typer] pbcopy write failed on attempt {}: {}", attempt + 1, e);
+            }
+        }
+
+        match child.wait() {
+            Ok(status) if status.success() && read_clipboard_text().as_deref() == Some(text) => {
+                return true;
+            }
+            Ok(status) => {
+                log::warn!("[typer] pbcopy verification failed on attempt {}: {}", attempt + 1, status);
+            }
+            Err(e) => {
+                log::warn!("[typer] pbcopy wait failed on attempt {}: {}", attempt + 1, e);
+            }
+        }
+
+        thread::sleep(Duration::from_millis(CLIPBOARD_VERIFY_DELAY_MS));
+    }
+
+    false
+}
+
+fn restore_clipboard_if_unchanged(expected: &str, previous: Option<String>) {
+    if read_clipboard_text().as_deref() != Some(expected) {
+        log::debug!("[typer] clipboard changed after paste; preserving newer clipboard content");
+        return;
+    }
+
+    let restore_text = previous.unwrap_or_default();
+    if !write_clipboard_text(&restore_text) {
+        log::warn!("[typer] failed to restore clipboard after paste");
+    }
+}
+
+fn schedule_clipboard_restore(expected: String, previous: Option<String>) {
+    let _ = thread::Builder::new()
+        .name("furo-clipboard-restore".into())
+        .spawn(move || {
+            thread::sleep(Duration::from_millis(CLIPBOARD_RESTORE_DELAY_MS));
+            let _clipboard_guard = CLIPBOARD_INJECTION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            restore_clipboard_if_unchanged(&expected, previous);
+        });
+}
+
 /// Inject text into the target app via clipboard + Cmd+V.
 ///
 /// Saves and restores the previous clipboard content so dictation
@@ -176,6 +250,8 @@ pub fn type_text(text: &str, target: &CapturedTarget) -> bool {
         return true;
     }
 
+    let _clipboard_guard = CLIPBOARD_INJECTION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+
     let mut output = text.to_string();
     if config::INSERT_TRAILING_SPACE {
         output.push(' ');
@@ -183,37 +259,15 @@ pub fn type_text(text: &str, target: &CapturedTarget) -> bool {
 
     // ── Step 1: save clipboard ──────────────────────────────────────────
     log::info!("[typer] step 1/5 — saving clipboard via pbpaste (pid={})", target.parent);
-    let prev_clipboard: Option<String> = std::process::Command::new("pbpaste")
-        .output()
-        .ok()
-        .and_then(|o| if o.status.success() { String::from_utf8(o.stdout).ok() } else { None });
+    let prev_clipboard = read_clipboard_text();
     log::info!("[typer] step 1/5 done — prev clipboard {} bytes",
         prev_clipboard.as_deref().map(|s| s.len()).unwrap_or(0));
 
     // ── Step 2: write transcription to clipboard ─────────────────────────
     log::info!("[typer] step 2/5 — writing {:?} to clipboard via pbcopy", output);
-    {
-        use std::io::Write;
-        let mut child = match std::process::Command::new("pbcopy")
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                log::error!("[typer] step 2/5 FAILED — pbcopy spawn error: {}", e);
-                return false;
-            }
-        };
-        if let Some(ref mut stdin) = child.stdin {
-            if let Err(e) = stdin.write_all(output.as_bytes()) {
-                log::error!("[typer] step 2/5 FAILED — pbcopy write error: {}", e);
-                return false;
-            }
-        }
-        if let Err(e) = child.wait() {
-            log::error!("[typer] step 2/5 FAILED — pbcopy wait error: {}", e);
-            return false;
-        }
+    if !write_clipboard_text(&output) {
+        log::error!("[typer] step 2/5 FAILED — could not verify pbcopy write");
+        return false;
     }
     log::info!("[typer] step 2/5 done");
 
@@ -241,26 +295,16 @@ pub fn type_text(text: &str, target: &CapturedTarget) -> bool {
     log::info!("[typer] step 5/5 — waiting {}ms then sending Cmd+V (focused app receives)",
         config::TYPING_FOCUS_DELAY_MS);
     thread::sleep(Duration::from_millis(config::TYPING_FOCUS_DELAY_MS));
+
+    if !write_clipboard_text(&output) {
+        log::error!("[typer] step 5/5 FAILED — could not re-assert clipboard before paste");
+        return false;
+    }
+
     send_cmd_v();
     log::info!("[typer] step 5/5 — Cmd+V sent to HID event stream");
 
-    // Restore the previous clipboard content.
-    thread::sleep(Duration::from_millis(200));
-    {
-        use std::io::Write;
-        if let Ok(mut child) = std::process::Command::new("pbcopy")
-            .stdin(std::process::Stdio::piped())
-            .spawn()
-        {
-            if let Some(ref mut stdin) = child.stdin {
-                match prev_clipboard {
-                    Some(ref prev) => { let _ = stdin.write_all(prev.as_bytes()); }
-                    None => { let _ = stdin.write_all(b""); }
-                }
-            }
-            let _ = child.wait();
-        }
-    }
+    schedule_clipboard_restore(output, prev_clipboard);
     log::info!("[typer] type_text complete");
 
     true
