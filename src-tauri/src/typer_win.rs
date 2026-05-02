@@ -1,4 +1,4 @@
-//! Windows text injection — Win32 SendInput + Clipboard.
+//! Windows text injection — Win32 SendInput Unicode text with verified clipboard fallback.
 
 use std::sync::atomic::{AtomicIsize, AtomicU32, Ordering};
 use std::thread;
@@ -13,7 +13,7 @@ use windows::Win32::UI::Accessibility::{
 };
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY,
-    VK_CONTROL, VK_V,
+    KEYEVENTF_UNICODE, VK_CONTROL, VK_V,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     AllowSetForegroundWindow, BringWindowToTop, GetForegroundWindow, GetMessageW,
@@ -27,7 +27,8 @@ use crate::config;
 static CLIPBOARD_INJECTION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 const CLIPBOARD_VERIFY_RETRIES: usize = 5;
 const CLIPBOARD_VERIFY_DELAY_MS: u64 = 20;
-const CLIPBOARD_RESTORE_DELAY_MS: u64 = 900;
+const CLIPBOARD_RESTORE_DELAY_MS: u64 = 180;
+const UNICODE_INPUT_CHUNK: usize = 64;
 
 // ── Focus tracker globals ─────────────────────────────────────────────────
 /// Our own process ID — set once in `start_focus_tracker`. 0 = not yet set.
@@ -171,6 +172,63 @@ fn make_key_input(vk: VIRTUAL_KEY, flags: u32) -> INPUT {
             },
         },
     }
+}
+
+fn make_unicode_input(code_unit: u16, key_up: bool) -> INPUT {
+    let mut flags = KEYEVENTF_UNICODE.0;
+    if key_up {
+        flags |= KEYEVENTF_KEYUP.0;
+    }
+
+    INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: VIRTUAL_KEY(0),
+                wScan: code_unit,
+                dwFlags: windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS(flags),
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    }
+}
+
+fn target_is_foreground(target_hwnd: isize) -> bool {
+    unsafe { GetForegroundWindow().0 == HWND(target_hwnd as *mut _).0 }
+}
+
+fn send_unicode_text(text: &str, target_hwnd: isize) -> bool {
+    let utf16: Vec<u16> = text.encode_utf16().collect();
+    if utf16.is_empty() {
+        return true;
+    }
+
+    for chunk in utf16.chunks(UNICODE_INPUT_CHUNK) {
+        if !target_is_foreground(target_hwnd) {
+            log::warn!("Target changed during Unicode text injection; aborting remaining text.");
+            return false;
+        }
+
+        let mut inputs = Vec::with_capacity(chunk.len() * 2);
+        for &code_unit in chunk {
+            inputs.push(make_unicode_input(code_unit, false));
+            inputs.push(make_unicode_input(code_unit, true));
+        }
+
+        let expected = inputs.len() as u32;
+        let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
+        if sent != expected {
+            log::warn!(
+                "Unicode SendInput sent {} events instead of {}.",
+                sent,
+                expected
+            );
+            return false;
+        }
+    }
+
+    true
 }
 
 /// Simulate physical Ctrl+V via SendInput (hardware-level).
@@ -324,75 +382,78 @@ fn restore_focus(target_hwnd: isize) -> bool {
     }
 }
 
-/// Inject text into the target window via clipboard + Ctrl+V.
+fn type_text_via_clipboard(output: &str) -> bool {
+    let prev_clipboard = read_clipboard_text();
+
+    if !set_clipboard_text(output) {
+        log::warn!("Could not place transcription on clipboard after retries.");
+        return false;
+    }
+
+    if read_clipboard_text().as_deref() != Some(output) {
+        log::warn!("Clipboard changed before paste; aborting fallback paste.");
+        restore_clipboard_if_unchanged(output, prev_clipboard);
+        return false;
+    }
+
+    send_ctrl_v();
+    schedule_clipboard_restore(output.to_string(), prev_clipboard);
+    true
+}
+
+/// Inject text into the target window.
 ///
-/// Strategy:
-///   1. Copy text to system clipboard via arboard.
-///   2. Restore focus to the target window.
-///   3. Simulate physical Ctrl+V via SendInput.
-///   4. If focus restoration fails, leave text on clipboard and return `false`.
-///
-/// Returns `true` on success, `false` if window was lost (text stays on clipboard).
+/// Primary path uses SendInput Unicode packets, which does not touch the system
+/// clipboard. The clipboard path is only a verified fallback for apps that reject
+/// Unicode packets.
 pub fn type_text(text: &str, target: &CapturedTarget) -> bool {
     if text.is_empty() {
         return true;
     }
-
-    let _clipboard_guard = CLIPBOARD_INJECTION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     let mut output = text.to_string();
     if config::INSERT_TRAILING_SPACE {
         output.push(' ');
     }
 
-    // Step 1: Save previous clipboard content so we can restore it after typing.
-    let prev_clipboard = read_clipboard_text();
-
-    // Put transcription text on clipboard for Ctrl+V injection.
-    if !set_clipboard_text(&output) {
-        log::warn!("Could not place transcription on clipboard after retries.");
-        return false;
-    }
-
-    // Step 2: Validate the target window still exists
     unsafe {
         let parent = HWND(target.parent as *mut _);
         if !IsWindow(parent).as_bool() {
             log::warn!(
-                "Parent HWND 0x{:X} destroyed — text left on clipboard.",
+                "Parent HWND 0x{:X} destroyed — aborting text injection.",
                 target.parent
             );
             return false;
         }
     }
 
-    // Step 3: Restore focus to the target window
     if !restore_focus(target.parent) {
         log::warn!(
-            "Focus restore failed for 0x{:X} — text left on clipboard.",
+            "Focus restore failed for 0x{:X} — aborting text injection.",
             target.parent
         );
         return false;
     }
 
-    // Step 4: Small delay for the window to settle, then Ctrl+V
     thread::sleep(Duration::from_millis(config::TYPING_FOCUS_DELAY_MS));
 
-    // Re-assert the transcription immediately before paste. This closes the
-    // timing hole where another clipboard write between focus restore and
-    // SendInput would cause the target app to paste stale clipboard content.
-    if !set_clipboard_text(&output) {
-        log::warn!("Could not re-assert transcription on clipboard before paste.");
+    if !target_is_foreground(target.parent) {
+        log::warn!(
+            "Target HWND 0x{:X} is no longer foreground — aborting text injection.",
+            target.parent
+        );
         return false;
     }
 
-    send_ctrl_v();
-    log::debug!("Ctrl+V sent to 0x{:X} via SendInput.", target.parent);
+    if send_unicode_text(&output, target.parent) {
+        log::debug!("Unicode text sent to 0x{:X} via SendInput.", target.parent);
+        return true;
+    }
 
-    // Restore later on a detached path so the dictation pipeline can return to
-    // ready as soon as the paste is sent. The restore preserves any newer user
-    // clipboard content if it changed after paste.
-    schedule_clipboard_restore(output, prev_clipboard);
-
-    true
+    let _clipboard_guard = CLIPBOARD_INJECTION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    if !target_is_foreground(target.parent) {
+        log::warn!("Target changed before clipboard fallback — aborting paste.");
+        return false;
+    }
+    type_text_via_clipboard(&output)
 }

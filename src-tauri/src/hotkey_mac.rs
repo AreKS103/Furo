@@ -370,7 +370,7 @@ impl HotkeyListener {
         let hold_combo = parse_hotkey_combo(hold_combo_str);
         let handsfree_combo = parse_hotkey_combo(handsfree_combo_str);
 
-        let (sender, receiver) = crossbeam_channel::bounded::<HotkeyEvent>(256);
+        let (sender, receiver) = crossbeam_channel::unbounded::<HotkeyEvent>();
         *HOOK_SENDER.lock().unwrap() = Some(sender);
 
         let stop_flag = Arc::new(AtomicBool::new(false));

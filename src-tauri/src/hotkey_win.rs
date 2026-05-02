@@ -160,7 +160,7 @@ impl HotkeyListener {
         let hold_combo = parse_hotkey_combo(hold_combo_str);
         let handsfree_combo = parse_hotkey_combo(handsfree_combo_str);
 
-        let (sender, receiver) = crossbeam_channel::bounded::<HotkeyEvent>(256);
+        let (sender, receiver) = crossbeam_channel::unbounded::<HotkeyEvent>();
 
         // Store sender — replaces any previous sender from a stopped listener
         *HOOK_SENDER.lock().unwrap() = Some(sender);

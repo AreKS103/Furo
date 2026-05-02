@@ -1,10 +1,10 @@
-//! macOS text injection — CGEvent Cmd+V + NSRunningApplication.
+//! macOS text injection — CGEvent Unicode text with Cmd+V clipboard fallback.
 //!
 //! Uses:
 //!   - NSWorkspace to track the frontmost application
 //!   - NSRunningApplication to restore focus
-//!   - CoreGraphics CGEvent to simulate Cmd+V keystrokes
-//!   - pbcopy/pbpaste for clipboard access (subprocess-safe, avoids ObjC exceptions)
+//!   - CoreGraphics CGEvent to inject Unicode text without touching the clipboard
+//!   - pbcopy/pbpaste only for verified fallback paste
 //!
 //! Requires Accessibility access (System Preferences > Privacy & Security > Accessibility).
 
@@ -22,7 +22,7 @@ use super::CapturedTarget;
 static CLIPBOARD_INJECTION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 const CLIPBOARD_VERIFY_RETRIES: usize = 5;
 const CLIPBOARD_VERIFY_DELAY_MS: u64 = 20;
-const CLIPBOARD_RESTORE_DELAY_MS: u64 = 900;
+const CLIPBOARD_RESTORE_DELAY_MS: u64 = 180;
 
 // ── macOS virtual key codes ───────────────────────────────────────────────
 const KVK_COMMAND: u16 = 0x37;
@@ -41,6 +41,11 @@ extern "C" {
     ) -> *mut c_void;
     fn CGEventPost(tap: u32, event: *mut c_void);
     fn CGEventSetFlags(event: *mut c_void, flags: u64);
+    fn CGEventKeyboardSetUnicodeString(
+        event: *mut c_void,
+        string_length: usize,
+        unicode_string: *const u16,
+    );
 }
 
 // CGEventTapLocation — post to the HID event stream (delivers to focused app)
@@ -136,6 +141,23 @@ pub fn capture_target() -> Option<CapturedTarget> {
     })
 }
 
+fn frontmost_pid() -> Option<i32> {
+    std::panic::catch_unwind(|| unsafe {
+        let pool: *mut Object = msg_send![class!(NSAutoreleasePool), new];
+        let workspace: *mut Object = msg_send![class!(NSWorkspace), sharedWorkspace];
+        let app: *mut Object = msg_send![workspace, frontmostApplication];
+        let pid: i32 = if !app.is_null() {
+            msg_send![app, processIdentifier]
+        } else {
+            -1i32
+        };
+        let _: () = msg_send![pool, drain];
+        pid
+    })
+    .ok()
+    .filter(|pid| *pid > 0)
+}
+
 /// Simulate Cmd+V via CoreGraphics keyboard events.
 ///
 /// Posts to the HID event stream (`kCGHIDEventTap`) which delivers to
@@ -170,6 +192,34 @@ fn send_cmd_v() {
         CGEventPost(KCG_HID_EVENT_TAP, cmd_up);
         CFRelease(cmd_up);
     }
+}
+
+fn send_unicode_text(text: &str) -> bool {
+    for character in text.chars() {
+        let mut utf16 = [0u16; 2];
+        let units = character.encode_utf16(&mut utf16);
+
+        unsafe {
+            let key_down = CGEventCreateKeyboardEvent(std::ptr::null(), 0, true);
+            if key_down.is_null() {
+                log::warn!("[typer] CGEventCreateKeyboardEvent returned null for unicode key down");
+                return false;
+            }
+            CGEventKeyboardSetUnicodeString(key_down, units.len(), units.as_ptr());
+            CGEventPost(KCG_HID_EVENT_TAP, key_down);
+            CFRelease(key_down);
+
+            let key_up = CGEventCreateKeyboardEvent(std::ptr::null(), 0, false);
+            if key_up.is_null() {
+                log::warn!("[typer] CGEventCreateKeyboardEvent returned null for unicode key up");
+                return false;
+            }
+            CGEventPost(KCG_HID_EVENT_TAP, key_up);
+            CFRelease(key_up);
+        }
+    }
+
+    true
 }
 
 fn read_clipboard_text() -> Option<String> {
@@ -241,71 +291,65 @@ fn schedule_clipboard_restore(expected: String, previous: Option<String>) {
         });
 }
 
-/// Inject text into the target app via clipboard + Cmd+V.
+fn type_text_via_clipboard(output: &str) -> bool {
+    let prev_clipboard = read_clipboard_text();
+
+    if !write_clipboard_text(output) {
+        log::error!("[typer] fallback failed — could not verify pbcopy write");
+        return false;
+    }
+
+    if read_clipboard_text().as_deref() != Some(output) {
+        log::warn!("[typer] clipboard changed before paste; aborting fallback paste");
+        restore_clipboard_if_unchanged(output, prev_clipboard);
+        return false;
+    }
+
+    send_cmd_v();
+    schedule_clipboard_restore(output.to_string(), prev_clipboard);
+    true
+}
+
+/// Inject text into the target app.
 ///
-/// Saves and restores the previous clipboard content so dictation
-/// doesn't pollute the user's clipboard.
+/// Primary path posts Unicode keyboard events and does not touch the general
+/// pasteboard. Cmd+V is retained only as a verified fallback.
 pub fn type_text(text: &str, target: &CapturedTarget) -> bool {
     if text.is_empty() {
         return true;
     }
-
-    let _clipboard_guard = CLIPBOARD_INJECTION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
 
     let mut output = text.to_string();
     if config::INSERT_TRAILING_SPACE {
         output.push(' ');
     }
 
-    // ── Step 1: save clipboard ──────────────────────────────────────────
-    log::info!("[typer] step 1/5 — saving clipboard via pbpaste (pid={})", target.parent);
-    let prev_clipboard = read_clipboard_text();
-    log::info!("[typer] step 1/5 done — prev clipboard {} bytes",
-        prev_clipboard.as_deref().map(|s| s.len()).unwrap_or(0));
-
-    // ── Step 2: write transcription to clipboard ─────────────────────────
-    log::info!("[typer] step 2/5 — writing {:?} to clipboard via pbcopy", output);
-    if !write_clipboard_text(&output) {
-        log::error!("[typer] step 2/5 FAILED — could not verify pbcopy write");
-        return false;
-    }
-    log::info!("[typer] step 2/5 done");
-
-    // ── Step 3: validate the target process still exists ─────────────────
     // Use kill(pid, 0) — a pure POSIX syscall with no ObjC — to check liveness.
     // kill(pid, 0) returns 0 if the process exists and we have permission to
     // signal it, or errno ESRCH if it doesn't exist.
     let target_pid = target.parent as i32;
-    log::info!("[typer] step 3/5 — validating pid {} via kill(0)", target_pid);
     let pid_alive = unsafe { libc::kill(target_pid, 0) } == 0;
     if !pid_alive {
-        log::warn!("[typer] step 3/5 — pid {} no longer running (ESRCH), aborting", target_pid);
+        log::warn!("[typer] pid {} no longer running (ESRCH), aborting", target_pid);
         return false;
     }
-    log::info!("[typer] step 3/5 done — pid {} alive", target_pid);
 
-    // ── Step 4: focus check ─────────────────────────────────────────────────
+    if frontmost_pid() != Some(target_pid) {
+        log::warn!("[typer] target pid {} is no longer frontmost; aborting", target_pid);
+        return false;
+    }
+
     // The Furo widget is a non-activating panel (NSWindowStyleMaskNonactivatingPanel),
     // so opening the widget never steals focus from the user's target app.
     // We no longer call activateIgnoringOtherApps:YES (it throws NSException
     // on macOS 15 Sequoia). The target app should still be focused.
-    log::info!("[typer] step 4/5 — focus not changed (non-activating widget)");
-
-    // ── Step 5: send Cmd+V then restore clipboard ─────────────────────────
-    log::info!("[typer] step 5/5 — waiting {}ms then sending Cmd+V (focused app receives)",
-        config::TYPING_FOCUS_DELAY_MS);
     thread::sleep(Duration::from_millis(config::TYPING_FOCUS_DELAY_MS));
 
-    if !write_clipboard_text(&output) {
-        log::error!("[typer] step 5/5 FAILED — could not re-assert clipboard before paste");
-        return false;
+    if send_unicode_text(&output) {
+        log::info!("[typer] unicode text sent to HID event stream");
+        return true;
     }
 
-    send_cmd_v();
-    log::info!("[typer] step 5/5 — Cmd+V sent to HID event stream");
-
-    schedule_clipboard_restore(output, prev_clipboard);
-    log::info!("[typer] type_text complete");
-
-    true
+    let _clipboard_guard = CLIPBOARD_INJECTION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    type_text_via_clipboard(&output)
 }

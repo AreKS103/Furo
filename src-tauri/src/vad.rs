@@ -73,6 +73,12 @@ mod ort_impl {
             self.threshold = threshold;
         }
 
+        pub fn warmup(&mut self) {
+            let silence = [0i16; 512];
+            let _ = self.is_speech(&silence);
+            self.reset();
+        }
+
         pub fn is_speech(&mut self, chunk_i16: &[i16]) -> bool {
             let chunk_f32: Vec<f32> = chunk_i16
                 .iter()
@@ -205,6 +211,8 @@ mod stub_impl {
         pub fn reset(&self) {}
 
         pub fn set_threshold(&mut self, _threshold: f32) {}
+
+        pub fn warmup(&mut self) {}
 
         pub fn is_speech(&mut self, _chunk_i16: &[i16]) -> bool {
             true

@@ -345,7 +345,8 @@ impl FuroPipeline {
                     .unwrap_or(config::VAD_THRESHOLD);
 
                 match VoiceActivityDetector::new(&vad_path, threshold) {
-                    Ok(v) => {
+                    Ok(mut v) => {
+                        v.warmup();
                         *self.vad.lock() = Some(v);
                         log::info!("VAD ready.");
                     }
@@ -633,15 +634,19 @@ impl FuroPipeline {
                 });
 
                 move |chunk: &[i16]| {
-                    let mut s = state.lock();
+                    let frames: Vec<Vec<i16>> = {
+                        let mut s = state.lock();
+                        s.sample_acc.extend_from_slice(chunk);
 
-                    // Push all incoming samples into the accumulator.
-                    s.sample_acc.extend_from_slice(chunk);
+                        let available_frames = s.sample_acc.len() / 512;
+                        let mut frames = Vec::with_capacity(available_frames);
+                        for _ in 0..available_frames {
+                            frames.push(s.sample_acc.drain(..512).collect());
+                        }
+                        frames
+                    };
 
-                    // Drain exact 512-sample frames and run VAD on each.
-                    while s.sample_acc.len() >= 512 {
-                        let frame: Vec<i16> = s.sample_acc.drain(..512).collect();
-
+                    for frame in frames {
                         let is_speech = {
                             let mut vad_guard = vad_ref.vad.lock();
                             if let Some(ref mut vad) = *vad_guard {
@@ -651,6 +656,7 @@ impl FuroPipeline {
                             }
                         };
 
+                        let mut s = state.lock();
                         if is_speech {
                             // On speech onset, flush pre-roll so leading
                             // consonants are not lost.
@@ -769,8 +775,8 @@ impl FuroPipeline {
         if !text.is_empty() {
             self.emit_transcription(&text);
 
-            // Type text into target window (or fall back to clipboard when
-            // Furo itself was the foreground app at the time of the hotkey).
+            // Type text into target window. The typer uses direct Unicode input
+            // first, then a verified clipboard fallback only if needed.
             let target = self.captured_target.lock().clone();
             if let Some(ref target) = target {
                 std::thread::sleep(std::time::Duration::from_millis(20));
@@ -785,12 +791,12 @@ impl FuroPipeline {
                 .unwrap_or_else(|_| {
                     log::error!(
                         "[pipeline] panic in type_text (likely ObjC exception \
-                         from focus/text injection) — text is on clipboard"
+                         from focus/text injection)"
                     );
                     false
                 });
                 if !success {
-                    self.emit_error("Target window was closed — text copied to clipboard.");
+                    self.emit_error("Could not inject text into the target window.");
                 }
             } else {
                 // No external target — transcription is visible in the UI only.

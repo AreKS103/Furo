@@ -404,6 +404,20 @@ fn check_fullscreen_active(own_pid: i32) -> bool {
                 }
             }
 
+            // ── Skip transparent/invisible windows ──────────────
+            let key_alpha: *mut objc::runtime::Object = {
+                let s = b"kCGWindowAlpha\0";
+                msg_send![class!(NSString), stringWithUTF8String: s.as_ptr() as *const c_char]
+            };
+            let alpha_obj: *mut objc::runtime::Object =
+                msg_send![dict, objectForKey: key_alpha];
+            if !alpha_obj.is_null() {
+                let alpha: f64 = msg_send![alpha_obj, doubleValue];
+                if alpha < 0.9 {
+                    continue;
+                }
+            }
+
             // ── Parse window bounds ──────────────────────────────
             let key_bounds: *mut objc::runtime::Object = {
                 let s = b"kCGWindowBounds\0";
@@ -424,16 +438,16 @@ fn check_fullscreen_active(own_pid: i32) -> bool {
                 continue;
             }
 
-            // ── Fullscreen if window fills any active display (±2pt tolerance) ──
-            if display_rects.iter().any(|screen| {
+            // ── Check if the topmost valid window fills any active display (±2pt tolerance) ──
+            // Since windows are ordered front-to-back, the first opaque layer-0 window
+            // determines if the user's *foreground* context is a fullscreen app.
+            found_fullscreen = display_rects.iter().any(|screen| {
                 (rect.x - screen.x).abs() <= 2.0
                     && (rect.y - screen.y).abs() <= 2.0
                     && (rect.width - screen.width).abs() <= 2.0
                     && (rect.height - screen.height).abs() <= 2.0
-            }) {
-                found_fullscreen = true;
-                break 'outer;
-            }
+            });
+            break 'outer;
         }
 
         let () = msg_send![pool, drain];
@@ -442,43 +456,46 @@ fn check_fullscreen_active(own_pid: i32) -> bool {
     }
 }
 
-/// Windows: returns true if any visible non-Furo window fills its monitor.
+/// Windows: returns true if the foreground window fills its monitor.
 #[cfg(target_os = "windows")]
 fn check_fullscreen_active(own_pid: u32) -> bool {
-    use windows::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
+    use windows::Win32::Foundation::RECT;
     use windows::Win32::Graphics::Gdi::{
         GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
     };
     use windows::Win32::UI::WindowsAndMessaging::{
-        EnumWindows, GetWindowRect, GetWindowThreadProcessId, IsWindowVisible,
+        GetClassNameW, GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId,
     };
 
-    struct FullscreenSearch {
-        own_pid: u32,
-        found: bool,
-    }
-
-    unsafe extern "system" fn enum_window(hwnd: HWND, lparam: LPARAM) -> BOOL {
-        let search = &mut *(lparam.0 as *mut FullscreenSearch);
-        if search.found || hwnd.0.is_null() || !IsWindowVisible(hwnd).as_bool() {
-            return BOOL(1);
+    unsafe {
+        let hwnd = GetForegroundWindow();
+        if hwnd.0.is_null() {
+            return false;
         }
 
         let mut pid = 0u32;
         GetWindowThreadProcessId(hwnd, Some(&mut pid as *mut u32));
-        if pid == 0 || pid == search.own_pid {
-            return BOOL(1);
+        if pid == 0 || pid == own_pid {
+            return false;
+        }
+
+        let mut class_name = [0u16; 256];
+        let len = GetClassNameW(hwnd, &mut class_name);
+        let class_string = String::from_utf16_lossy(&class_name[..len as usize]);
+        if class_string == "Progman" || class_string == "WorkerW" {
+            return false;
         }
 
         let mut wr = RECT::default();
         if GetWindowRect(hwnd, &mut wr).is_err() {
-            return BOOL(1);
+            return false;
         }
 
+        // Fullscreen windows should span at least 640x480 (filters out tiny overlays)
         let w = wr.right - wr.left;
         let h = wr.bottom - wr.top;
         if w < 640 || h < 480 {
-            return BOOL(1);
+            return false;
         }
 
         let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
@@ -487,29 +504,12 @@ fn check_fullscreen_active(own_pid: u32) -> bool {
             ..Default::default()
         };
         if !GetMonitorInfoW(monitor, &mut mi).as_bool() {
-            return BOOL(1);
+            return false;
         }
 
+        // True if the active foreground window precisely matches its monitor's bounds
         let mr = mi.rcMonitor;
-        if wr.left == mr.left
-            && wr.top == mr.top
-            && wr.right == mr.right
-            && wr.bottom == mr.bottom
-        {
-            search.found = true;
-            return BOOL(0);
-        }
-
-        BOOL(1)
-    }
-
-    unsafe {
-        let mut search = FullscreenSearch {
-            own_pid,
-            found: false,
-        };
-        let _ = EnumWindows(Some(enum_window), LPARAM(&mut search as *mut _ as isize));
-        search.found
+        wr.left == mr.left && wr.top == mr.top && wr.right == mr.right && wr.bottom == mr.bottom
     }
 }
 

@@ -310,6 +310,7 @@ fn vk_to_combo_part(vk: u32) -> String {
 /// Prevents rapid toggle on keyboards that send key-up/key-down pairs
 /// during auto-repeat (common on gaming keyboards like Razer).
 const HOLD_DEBOUNCE_MS: u128 = 200;
+const WORKER_IDLE_POLL_MS: u64 = 50;
 
 pub(super) fn hotkey_worker(
     receiver: Receiver<HotkeyEvent>,
@@ -360,7 +361,7 @@ pub(super) fn hotkey_worker(
         }
         was_rebind_active = rebind_active;
 
-        let event = match receiver.recv_timeout(std::time::Duration::from_millis(500)) {
+        let event = match receiver.recv_timeout(std::time::Duration::from_millis(WORKER_IDLE_POLL_MS)) {
             Ok(e) => e,
             Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
             Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,

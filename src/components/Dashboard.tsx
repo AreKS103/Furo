@@ -484,9 +484,29 @@ function SettingsPage({
   }, [settings]);
 
   useEffect(() => {
-    invoke<Mic[]>("list_microphones").then((d) => setMics(d ?? [])).catch((e) => console.warn("[settings] list mics:", e));
-    invoke<FoundModel[]>("scan_whisper_models").then((d) => setModels(d ?? [])).catch((e) => console.warn("[settings] scan models:", e));
-    invoke<boolean>("get_autostart").then(setAutostart).catch((e) => console.warn("[settings] get autostart:", e));
+    Promise.allSettled([
+      invoke<Mic[]>("list_microphones"),
+      invoke<FoundModel[]>("scan_whisper_models"),
+      invoke<boolean>("get_autostart"),
+    ]).then(([micResult, modelResult, autostartResult]) => {
+      if (micResult.status === "fulfilled") {
+        setMics(micResult.value ?? []);
+      } else {
+        console.warn("[settings] list mics:", micResult.reason);
+      }
+
+      if (modelResult.status === "fulfilled") {
+        setModels(modelResult.value ?? []);
+      } else {
+        console.warn("[settings] scan models:", modelResult.reason);
+      }
+
+      if (autostartResult.status === "fulfilled") {
+        setAutostart(autostartResult.value);
+      } else {
+        console.warn("[settings] get autostart:", autostartResult.reason);
+      }
+    });
   }, []);
 
   /* ── Rebind effect ───────────────────────────────────────────────

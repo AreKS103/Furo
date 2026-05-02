@@ -180,6 +180,7 @@ impl Transcriber {
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(180))
             .tcp_nodelay(true)        // disable Nagle — shaves ~0-40ms on localhost
+            .tcp_keepalive(std::time::Duration::from_secs(60))
             .pool_idle_timeout(std::time::Duration::from_secs(300)) // keep connection warm
             .build()
             .expect("Failed to build HTTP client");

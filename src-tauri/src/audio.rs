@@ -131,13 +131,15 @@ impl AudioRecorder {
             let hp_prev_in = Arc::new(Mutex::new(0.0_f32));
             let hp_prev_out = Arc::new(Mutex::new(0.0_f32));
 
-            move |mono_i16: Vec<i16>| {
+            move |mono_i16: &[i16]| {
                 if !recording.load(Ordering::Relaxed) {
                     return;
                 }
 
-                let resampled = if need_resample {
-                    resample_linear(&mono_i16, source_rate, target_rate, &resample_pos)
+                let resampled_storage;
+                let resampled: &[i16] = if need_resample {
+                    resampled_storage = resample_linear(mono_i16, source_rate, target_rate, &resample_pos);
+                    &resampled_storage
                 } else {
                     mono_i16
                 };
@@ -155,7 +157,7 @@ impl AudioRecorder {
                 // audio section repeatedly.
                 //
                 // Noise floor is still tracked for accurate volume metering.
-                let output = if cfg!(target_os = "windows") {
+                if cfg!(target_os = "windows") {
                     // Update noise floor EMA (metering only, does not modify audio)
                     let sum_sq: f64 = resampled.iter().map(|&s| (s as f64) * (s as f64)).sum();
                     let rms = (sum_sq / resampled.len() as f64).sqrt() as f32;
@@ -171,7 +173,19 @@ impl AudioRecorder {
                                 + db * config::NOISE_FLOOR_ALPHA;
                         }
                     }
-                    resampled
+                    on_raw_chunk(resampled);
+
+                    // Throttled volume computation
+                    let now = Instant::now();
+                    let mut last = last_volume_time.lock();
+                    if now.duration_since(*last).as_millis()
+                        >= config::VOLUME_THROTTLE_MS as u128
+                    {
+                        *last = now;
+                        let level = compute_volume(resampled, &noise_floor);
+                        let boosted = (level * vol_boost).min(1.0);
+                        on_volume(boosted);
+                    }
                 } else {
                     // macOS / other: full InputProfile DSP chain
 
@@ -199,7 +213,7 @@ impl AudioRecorder {
                 // of each recording. After warm-up, the threshold is set to
                 // max(profile_static_gate, noise_floor + ADAPTIVE_GATE_HEADROOM_DB)
                 // so it automatically raises in noisy environments.
-                {
+                let output = {
                     let sum_sq: f64 = processed.iter().map(|&s| (s as f64) * (s as f64)).sum();
                     let rms = (sum_sq / processed.len() as f64).sqrt() as f32;
                     let db = if rms > 1.0 {
@@ -242,22 +256,22 @@ impl AudioRecorder {
                     } else {
                         processed
                     }
-                }
                 };
 
-                on_raw_chunk(&output);
+                    on_raw_chunk(&output);
 
-                // Throttled volume computation
-                let now = Instant::now();
-                let mut last = last_volume_time.lock();
-                if now.duration_since(*last).as_millis()
-                    >= config::VOLUME_THROTTLE_MS as u128
-                {
-                    *last = now;
-                    let level = compute_volume(&output, &noise_floor);
-                    // Apply volume display boost from profile
-                    let boosted = (level * vol_boost).min(1.0);
-                    on_volume(boosted);
+                    // Throttled volume computation
+                    let now = Instant::now();
+                    let mut last = last_volume_time.lock();
+                    if now.duration_since(*last).as_millis()
+                        >= config::VOLUME_THROTTLE_MS as u128
+                    {
+                        *last = now;
+                        let level = compute_volume(&output, &noise_floor);
+                        // Apply volume display boost from profile
+                        let boosted = (level * vol_boost).min(1.0);
+                        on_volume(boosted);
+                    }
                 }
             }
         });
@@ -266,20 +280,21 @@ impl AudioRecorder {
         let stream = match sample_fmt {
             SampleFormat::I16 => {
                 let process = Arc::clone(&process_audio);
+                let mut mono = Vec::<i16>::new();
                 device.build_input_stream(
                     &stream_config,
                     move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                        let mono: Vec<i16> = if ch > 1 {
-                            data.chunks_exact(ch)
-                                .map(|frame| {
-                                    let sum: i32 = frame.iter().map(|&s| s as i32).sum();
-                                    (sum / ch as i32) as i16
-                                })
-                                .collect()
+                        if ch > 1 {
+                            mono.clear();
+                            mono.reserve(data.len() / ch);
+                            for frame in data.chunks_exact(ch) {
+                                let sum: i32 = frame.iter().map(|&sample| sample as i32).sum();
+                                mono.push((sum / ch as i32) as i16);
+                            }
+                            process(&mono);
                         } else {
-                            data.to_vec()
-                        };
-                        process(mono);
+                            process(data);
+                        }
                     },
                     |err| log::error!("Audio stream error: {}", err),
                     None,
@@ -287,22 +302,23 @@ impl AudioRecorder {
             }
             SampleFormat::F32 => {
                 let process = Arc::clone(&process_audio);
+                let mut mono = Vec::<i16>::new();
                 device.build_input_stream(
                     &stream_config,
                     move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                        let mono: Vec<i16> = if ch > 1 {
-                            data.chunks_exact(ch)
-                                .map(|frame| {
-                                    let avg: f32 = frame.iter().sum::<f32>() / ch as f32;
-                                    (avg.clamp(-1.0, 1.0) * 32767.0) as i16
-                                })
-                                .collect()
+                        mono.clear();
+                        mono.reserve(data.len() / ch.max(1));
+                        if ch > 1 {
+                            for frame in data.chunks_exact(ch) {
+                                let avg: f32 = frame.iter().sum::<f32>() / ch as f32;
+                                mono.push((avg.clamp(-1.0, 1.0) * 32767.0) as i16);
+                            }
                         } else {
-                            data.iter()
-                                .map(|&s| (s.clamp(-1.0, 1.0) * 32767.0) as i16)
-                                .collect()
-                        };
-                        process(mono);
+                            for &sample in data {
+                                mono.push((sample.clamp(-1.0, 1.0) * 32767.0) as i16);
+                            }
+                        }
+                        process(&mono);
                     },
                     |err| log::error!("Audio stream error: {}", err),
                     None,
@@ -558,24 +574,25 @@ fn resample_linear(
     }
 
     let ratio = source_rate / target_rate;
-    let mut p = pos.lock();
+    let mut current_pos = *pos.lock();
     let mut out = Vec::with_capacity((input.len() as f64 / ratio) as usize + 1);
 
-    while (*p + 1.0) < input.len() as f64 {
-        let idx = *p as usize;
-        let frac = *p - idx as f64;
+    while (current_pos + 1.0) < input.len() as f64 {
+        let idx = current_pos as usize;
+        let frac = current_pos - idx as f64;
         let a = input[idx] as f64;
         let b = if idx + 1 < input.len() { input[idx + 1] as f64 } else { a };
         let sample = a + (b - a) * frac;
         out.push(sample.round() as i16);
-        *p += ratio;
+        current_pos += ratio;
     }
 
     // Carry over the fractional position for the next callback
-    *p -= input.len() as f64;
-    if *p < 0.0 {
-        *p = 0.0;
+    current_pos -= input.len() as f64;
+    if current_pos < 0.0 {
+        current_pos = 0.0;
     }
+    *pos.lock() = current_pos;
 
     out
 }

@@ -1,6 +1,7 @@
 //! Project Furo â€” Text Injection (cross-platform)
 //!
-//! Uses clipboard + paste simulation to inject text into the focused window.
+//! Uses direct Unicode keyboard events first, with a verified clipboard paste
+//! fallback for applications that reject synthetic Unicode input.
 
 #[cfg(target_os = "windows")]
 #[path = "typer_win.rs"]

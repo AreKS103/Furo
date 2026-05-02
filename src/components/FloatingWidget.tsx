@@ -37,7 +37,7 @@ const DURATION = "150ms";
 /* ─── Audio Visualizer Bars ──────────────────────────────────────── */
 const BAR_COUNT = 10;
 
-function AudioVisualizer({ volume, state }: { volume: number; state: ServerState }) {
+function AudioVisualizer({ volume, state, running }: { volume: number; state: ServerState; running: boolean }) {
   const [tick, setTick] = useState(0);
   const raf = useRef(0);
   const smoothVol = useRef(0);
@@ -45,6 +45,11 @@ function AudioVisualizer({ volume, state }: { volume: number; state: ServerState
   targetVol.current = volume;
 
   useEffect(() => {
+    if (!running) {
+      smoothVol.current = 0;
+      return;
+    }
+
     const loop = () => {
       smoothVol.current += (targetVol.current - smoothVol.current) * 0.3;
       setTick((t) => t + 1);
@@ -52,7 +57,7 @@ function AudioVisualizer({ volume, state }: { volume: number; state: ServerState
     };
     raf.current = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(raf.current);
-  }, []);
+  }, [running]);
 
   const v = smoothVol.current;
   const bars = Array.from({ length: BAR_COUNT }, (_, i) => {
@@ -213,7 +218,7 @@ export function FloatingWidget() {
         invoke("widget_hold_release").catch(() => {});
       }
       hoverTimer.current = null;
-    }, 200);
+    }, 100);
   };
 
   // All platforms: Rust polling thread drives hover via `widget-hover` events.
@@ -331,7 +336,7 @@ export function FloatingWidget() {
         >
           {/* Visualizer opacity: set directly, no CSS transition to avoid dimming flicker */}
           <div style={{ opacity: expanded ? (isActive ? 1 : 0.5) : 0 }}>
-            <AudioVisualizer volume={volume} state={state} />
+            <AudioVisualizer volume={volume} state={state} running={expanded && !isFullscreen} />
           </div>
         </div>
       </div>
