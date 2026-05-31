@@ -1,6 +1,6 @@
 [package]
 name = "furo"
-version = "0.2.47"
+version = "0.2.48"
 edition = "2021"
 
 [lib]
@@ -62,6 +62,8 @@ strip = true
 
 [target.'cfg(target_os = "windows")'.dependencies]
 arboard = "3"
+sha2 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_UI_WindowsAndMessaging",

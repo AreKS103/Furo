@@ -11,7 +11,7 @@ fn main() {
     // additional triple-stripped copy of every sidecar .exe so dev mode
     // can find it.
     let target = std::env::var("TARGET").unwrap_or_default(); // e.g. "x86_64-pc-windows-msvc"
-    let triple_suffix = format!("-{}", target);               // e.g. "-x86_64-pc-windows-msvc"
+    let triple_suffix = format!("-{}", target); // e.g. "-x86_64-pc-windows-msvc"
 
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
     let src_binaries = std::path::Path::new(&manifest_dir).join("binaries");
@@ -28,6 +28,7 @@ fn main() {
         std::fs::create_dir_all(&dst_binaries).unwrap();
 
         let is_windows = target.contains("windows");
+        let is_release = std::env::var("PROFILE").unwrap_or_default() == "release";
 
         for entry in std::fs::read_dir(&src_binaries).unwrap() {
             let entry = entry.unwrap();
@@ -38,6 +39,17 @@ fn main() {
 
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
+
+            // Release builds keep the CUDA runtime out of the signed app
+            // updater bundle. The app verifies and caches these stable files
+            // under %APPDATA%/Furo/runtime instead, so normal updates only
+            // carry the small app and CPU-side Whisper files.
+            if is_release && is_windows && is_windows_cuda_runtime_file(&name_str) {
+                println!("cargo::warning=skipping bundled CUDA runtime: {}", name_str);
+                let _ = std::fs::remove_file(dst_binaries.join(entry.file_name()));
+                let _ = std::fs::remove_file(target_profile_dir.join(entry.file_name()));
+                continue;
+            }
 
             // Skip files that don't belong to the current target OS:
             //   - .dll / .exe are Windows-only
@@ -58,7 +70,10 @@ fn main() {
                 true
             };
             if needs_copy {
-                println!("cargo::warning=copying sidecar: {}", entry.file_name().to_string_lossy());
+                println!(
+                    "cargo::warning=copying sidecar: {}",
+                    entry.file_name().to_string_lossy()
+                );
                 std::fs::copy(&src, &dst).unwrap();
             }
 
@@ -75,7 +90,10 @@ fn main() {
                         true
                     };
                     if needs_short {
-                        println!("cargo::warning=copying sidecar (short name): {}", short_name);
+                        println!(
+                            "cargo::warning=copying sidecar (short name): {}",
+                            short_name
+                        );
                         std::fs::copy(&src, &dst_short).unwrap();
                     }
 
@@ -89,7 +107,10 @@ fn main() {
                         true
                     };
                     if needs_root_triple {
-                        println!("cargo::warning=copying sidecar to root: {}", entry.file_name().to_string_lossy());
+                        println!(
+                            "cargo::warning=copying sidecar to root: {}",
+                            entry.file_name().to_string_lossy()
+                        );
                         std::fs::copy(&src, &dst_root_triple).unwrap();
                     }
 
@@ -102,7 +123,10 @@ fn main() {
                         true
                     };
                     if needs_root_short {
-                        println!("cargo::warning=copying sidecar short to root: {}", short_name);
+                        println!(
+                            "cargo::warning=copying sidecar short to root: {}",
+                            short_name
+                        );
                         std::fs::copy(&src, &dst_root_short).unwrap();
                     }
                 }
@@ -116,7 +140,10 @@ fn main() {
                     true
                 };
                 if needs_dll {
-                    println!("cargo::warning=copying DLL to root: {}", entry.file_name().to_string_lossy());
+                    println!(
+                        "cargo::warning=copying DLL to root: {}",
+                        entry.file_name().to_string_lossy()
+                    );
                     std::fs::copy(&src, &dst_root_dll).unwrap();
                 }
             } else if !name_str.contains('.') {
@@ -171,4 +198,11 @@ fn main() {
     // Ensure winmm.lib is linked for PlaySoundA (widget activation audio).
     #[cfg(target_os = "windows")]
     println!("cargo:rustc-link-lib=winmm");
+}
+
+fn is_windows_cuda_runtime_file(name: &str) -> bool {
+    matches!(
+        name,
+        "cublas64_13.dll" | "cublasLt64_13.dll" | "cudart64_13.dll" | "ggml-cuda.dll"
+    )
 }

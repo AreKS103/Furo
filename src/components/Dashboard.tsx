@@ -49,6 +49,13 @@ interface DashboardProps {
   setTheme: (t: "dark" | "light") => void;
 }
 
+type UpdaterUpdate = import("@tauri-apps/plugin-updater").Update;
+
+type UpdateFailureOptions = {
+  rememberFailedVersion?: boolean;
+  showMessage?: boolean;
+};
+
 /* ── Inline SVG icons ─────────────────────────────────────────────── */
 
 function GridIcon({ className = "h-5 w-5" }: { className?: string }) {
@@ -1073,9 +1080,12 @@ export function Dashboard({ theme, setTheme }: DashboardProps) {
   const [activeTab, setActiveTab] = useState<"home" | "settings">("home");
   const lastSavedRef = useRef("");
   const [updateAvailable, setUpdateAvailable] = useState(false);
-  const [updateStatus, setUpdateStatus] = useState<"idle" | "downloading" | "ready">("idle");
+  const [updateStatus, setUpdateStatus] = useState<"idle" | "downloading" | "ready" | "installing">("idle");
+  const [updateProgress, setUpdateProgress] = useState<number | null>(null);
   const [updateCheckMsg, setUpdateCheckMsg] = useState("");
-  const updateRef = useRef<import("@tauri-apps/plugin-updater").Update | null>(null);
+  const updateRef = useRef<UpdaterUpdate | null>(null);
+  const downloadingVersionRef = useRef<string | null>(null);
+  const downloadedVersionRef = useRef<string | null>(null);
   const failedVersionRef = useRef<string | null>(null);
   const [appTranslocation, setAppTranslocation] = useState(false);
   const [hotkeyPermission, setHotkeyPermission] = useState(false);
@@ -1104,6 +1114,104 @@ export function Dashboard({ theme, setTheme }: DashboardProps) {
     return () => { unlisten.then((fn) => fn()); };
   }, []);
 
+  const handleUpdateFailure = useCallback((updateVersion: string, error: unknown, options: UpdateFailureOptions = {}) => {
+    const { rememberFailedVersion = true, showMessage = true } = options;
+    setUpdateStatus("idle");
+    setUpdateProgress(null);
+    const msg = error instanceof Error ? error.message : String(error);
+    console.error("[updater] update failed:", msg);
+    console.error("[updater] full error:", error);
+
+    if (rememberFailedVersion) {
+      failedVersionRef.current = updateVersion;
+    }
+    downloadingVersionRef.current = null;
+    downloadedVersionRef.current = null;
+    updateRef.current = null;
+    setUpdateAvailable(false);
+
+    if (!showMessage) {
+      return;
+    }
+
+    if (msg.includes("Failed to move") || msg.includes("PermissionDenied") || msg.includes("permission")) {
+      console.error("[updater] macOS permission error — app may need to be in /Applications");
+      setUpdateCheckMsg("Update failed — macOS blocked the install. Move Furo.app to /Applications and retry, or re-download from GitHub Releases.");
+    } else if (msg.includes("signature")) {
+      console.error("[updater] signature verification failed");
+      setUpdateCheckMsg("Update failed — signature mismatch. Re-download from GitHub Releases.");
+    } else if (msg.includes("network") || msg.includes("connect") || msg.includes("timeout")) {
+      console.error("[updater] network error during update");
+      setUpdateCheckMsg("Update failed — network error. Check your connection and try again.");
+    } else {
+      setUpdateCheckMsg(`Update failed: ${msg}`);
+    }
+
+    setTimeout(() => setUpdateCheckMsg(""), 10000);
+  }, []);
+
+  const downloadUpdateInBackground = useCallback(async (update: UpdaterUpdate, manual = false) => {
+    if (downloadedVersionRef.current === update.version) {
+      updateRef.current = update;
+      setUpdateStatus("ready");
+      setUpdateProgress(100);
+      setUpdateAvailable(true);
+      if (manual) setUpdateCheckMsg("Update ready — restart Furo to finish.");
+      return;
+    }
+
+    if (downloadingVersionRef.current === update.version) {
+      if (manual) setUpdateCheckMsg("Update is already downloading in the background.");
+      return;
+    }
+
+    downloadingVersionRef.current = update.version;
+    updateRef.current = update;
+    setUpdateStatus("downloading");
+    setUpdateProgress(null);
+    if (manual) setUpdateCheckMsg("Downloading update in the background…");
+
+    try {
+      let downloaded = 0;
+      let contentLength = 0;
+      const downloadStart = Date.now();
+      console.log("[updater] background download started for v" + update.version);
+
+      await update.download((event) => {
+        switch (event.event) {
+          case "Started":
+            contentLength = event.data.contentLength ?? 0;
+            downloaded = 0;
+            console.log("[updater] download started, size:", contentLength, "bytes");
+            break;
+          case "Progress":
+            downloaded += event.data.chunkLength;
+            if (contentLength > 0) {
+              const pct = Math.min(99, Math.round((downloaded / contentLength) * 100));
+              setUpdateProgress(pct);
+              if (manual) setUpdateCheckMsg(`Downloading update… ${pct}%`);
+              if (downloaded % Math.max(1, Math.floor(contentLength / 10)) < event.data.chunkLength) {
+                console.log(`[updater] download progress: ${pct}% (${downloaded}/${contentLength})`);
+              }
+            }
+            break;
+          case "Finished":
+            console.log("[updater] download finished in", Date.now() - downloadStart, "ms");
+            break;
+        }
+      });
+
+      downloadingVersionRef.current = null;
+      downloadedVersionRef.current = update.version;
+      setUpdateProgress(100);
+      setUpdateStatus("ready");
+      setUpdateAvailable(true);
+      setUpdateCheckMsg(manual ? "Update ready — restart Furo to finish." : "");
+    } catch (e) {
+      handleUpdateFailure(update.version, e, { rememberFailedVersion: false, showMessage: manual });
+    }
+  }, [handleUpdateFailure]);
+
   /* Check for updates on mount + when triggered from tray */
   const checkForUpdate = useCallback(async (manual = false) => {
     try {
@@ -1121,8 +1229,7 @@ export function Dashboard({ theme, setTheme }: DashboardProps) {
           return;
         }
         updateRef.current = update;
-        setUpdateAvailable(true);
-        if (manual) setUpdateCheckMsg("");
+        await downloadUpdateInBackground(update, manual);
       } else if (manual) {
         setUpdateCheckMsg("You're on the latest version.");
         setTimeout(() => setUpdateCheckMsg(""), 4000);
@@ -1135,7 +1242,7 @@ export function Dashboard({ theme, setTheme }: DashboardProps) {
         setTimeout(() => setUpdateCheckMsg(""), 5000);
       }
     }
-  }, []);
+  }, [downloadUpdateInBackground]);
 
   // Auto-check on mount
   useEffect(() => {
@@ -1163,78 +1270,27 @@ export function Dashboard({ theme, setTheme }: DashboardProps) {
       return;
     }
     try {
-      console.log("[updater] starting update to v" + update.version);
+      if (downloadedVersionRef.current !== update.version) {
+        setUpdateCheckMsg("Update is still downloading in the background.");
+        setTimeout(() => setUpdateCheckMsg(""), 4000);
+        return;
+      }
 
-      // ── Phase 1: Download ──────────────────────────────────────────────
-      setUpdateStatus("downloading");
-      let downloaded = 0;
-      let contentLength = 0;
-      const downloadStart = Date.now();
-      console.log("[updater] calling download()…");
+      console.log("[updater] installing downloaded update v" + update.version);
+      setUpdateStatus("installing");
 
-      await update.download((event) => {
-        switch (event.event) {
-          case "Started":
-            contentLength = event.data.contentLength ?? 0;
-            console.log("[updater] download started, size:", contentLength, "bytes");
-            break;
-          case "Progress":
-            downloaded += event.data.chunkLength;
-            if (contentLength > 0) {
-              const pct = ((downloaded / contentLength) * 100).toFixed(1);
-              // Log every ~10% to avoid flooding console
-              if (downloaded % Math.max(1, Math.floor(contentLength / 10)) < event.data.chunkLength) {
-                console.log(`[updater] download progress: ${pct}% (${downloaded}/${contentLength})`);
-              }
-            }
-            break;
-          case "Finished":
-            console.log("[updater] download finished in", Date.now() - downloadStart, "ms");
-            break;
-        }
-      });
-
-      // ── Phase 2: Install ───────────────────────────────────────────────
       console.log("[updater] calling install()…");
       const installStart = Date.now();
       await update.install();
       console.log("[updater] install() completed in", Date.now() - installStart, "ms");
 
-      // ── Phase 3: Relaunch ──────────────────────────────────────────────
-      setUpdateStatus("ready");
       console.log("[updater] relaunching…");
       const { relaunch } = await import("@tauri-apps/plugin-process");
       await relaunch();
     } catch (e) {
-      setUpdateStatus("idle");
-      const msg = e instanceof Error ? e.message : String(e);
-      console.error("[updater] update failed:", msg);
-      console.error("[updater] full error:", e);
-
-      // Remember the failed version so auto-check won't re-show the banner.
-      failedVersionRef.current = update.version;
-
-      // Show specific guidance for known failure modes
-      if (msg.includes("Failed to move") || msg.includes("PermissionDenied") || msg.includes("permission")) {
-        console.error("[updater] macOS permission error — app may need to be in /Applications");
-        setUpdateCheckMsg("Update failed — macOS blocked the install. Move Furo.app to /Applications and retry, or re-download from GitHub Releases.");
-      } else if (msg.includes("signature")) {
-        console.error("[updater] signature verification failed");
-        setUpdateCheckMsg("Update failed — signature mismatch. Re-download from GitHub Releases.");
-      } else if (msg.includes("network") || msg.includes("connect") || msg.includes("timeout")) {
-        console.error("[updater] network error during update");
-        setUpdateCheckMsg("Update failed — network error. Check your connection and try again.");
-      } else {
-        setUpdateCheckMsg(`Update failed: ${msg}`);
-      }
-
-      // Prevent the update dialog from re-triggering in a loop
-      updateRef.current = null;
-      setUpdateAvailable(false);
-
-      setTimeout(() => setUpdateCheckMsg(""), 10000);
+      handleUpdateFailure(update.version, e);
     }
-  }, []);
+  }, [handleUpdateFailure]);
 
   /* Save new transcriptions to history */
   useEffect(() => {
@@ -1349,19 +1405,20 @@ export function Dashboard({ theme, setTheme }: DashboardProps) {
         {updateAvailable && (
           <div className="flex items-center justify-between border-b border-emerald-200 bg-emerald-50 px-4 py-2.5 dark:border-emerald-800 dark:bg-emerald-950/50">
             <span className="text-[13px] font-medium text-emerald-800 dark:text-emerald-300">
-              {updateStatus === "downloading"
-                ? "Downloading update…"
-                : updateStatus === "ready"
-                  ? "Restarting…"
-                  : `A new version of Furo is available (v${updateRef.current?.version ?? ""})`}
+              {updateStatus === "installing"
+                ? "Installing update…"
+                : `Furo v${updateRef.current?.version ?? ""} is ready to install`}
             </span>
-            {updateStatus === "idle" && (
+            {updateStatus === "ready" && (
               <button
                 onClick={installUpdate}
                 className="rounded-lg bg-emerald-600 px-3 py-1 text-[12px] font-medium text-white transition hover:bg-emerald-700"
               >
-                Install now
+                Restart to update
               </button>
+            )}
+            {updateStatus === "installing" && updateProgress !== null && (
+              <span className="text-[12px] font-medium text-emerald-700 dark:text-emerald-300">{updateProgress}%</span>
             )}
           </div>
         )}
