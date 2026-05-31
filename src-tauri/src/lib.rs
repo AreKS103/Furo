@@ -1,4 +1,4 @@
-﻿#![allow(dead_code)]
+#![allow(dead_code)]
 //! Tauri application entry point — wires audio, VAD, Whisper, hotkeys, and typer into the Tauri lifecycle.
 
 mod audio;
@@ -22,17 +22,22 @@ use tauri::{
 };
 
 use crate::audio::MicInfo;
+use crate::hotkey::REBIND_MODE_ACTIVE;
 use crate::pipeline::FuroPipeline;
 use crate::settings::SettingsStore;
 use crate::transcriber::{scan_for_whisper_models, FoundModel};
-use crate::hotkey::REBIND_MODE_ACTIVE;
 
 use tauri_plugin_autostart::MacosLauncher;
 
 /// Shared flag so the hover tracker knows whether the popup box is open.
 /// When closed, the exit zone is tight around the pill. When open, it
 /// covers the full window so the user can reach the popup.
-static WIDGET_POPUP_OPEN: std::sync::atomic::AtomicBool =
+static WIDGET_POPUP_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Shared flag for native widget input gating while a foreign fullscreen app
+/// owns the foreground. Visual opacity alone is not enough on Windows because
+/// the hover tracker can otherwise re-enable mouse input over the hidden pill.
+static WIDGET_FULLSCREEN_ACTIVE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
 // ── macOS: CoreGraphics cursor position for widget hover tracking ─────────
@@ -141,19 +146,17 @@ fn start_widget_hover_tracker(widget: tauri::WebviewWindow) {
                 // approaches from above, so only upward tolerance is added.
                 let center_x = lx + lw / 2.0;
                 let bottom = ly + lh; // stable: widget_set_size pins bottom edge
-                let in_activation =
-                    (cursor.x - center_x).abs() <= PILL_HALF_W
-                        && cursor.y >= bottom - PILL_H - Y_PAD_TOP
-                        && cursor.y <= bottom + Y_PAD_BOT;
+                let in_activation = (cursor.x - center_x).abs() <= PILL_HALF_W
+                    && cursor.y >= bottom - PILL_H - Y_PAD_TOP
+                    && cursor.y <= bottom + Y_PAD_BOT;
 
                 // Exit: current window bounds + 2px jitter margin.
                 // When expanded (80×20 or 80×62) this naturally covers the
                 // full expanded pill and popup area.
-                let in_exit =
-                    cursor.x >= lx - EXIT_PAD
-                        && cursor.x <= lx + lw + EXIT_PAD
-                        && cursor.y >= ly - EXIT_PAD
-                        && cursor.y <= ly + lh + EXIT_PAD;
+                let in_exit = cursor.x >= lx - EXIT_PAD
+                    && cursor.x <= lx + lw + EXIT_PAD
+                    && cursor.y >= ly - EXIT_PAD
+                    && cursor.y <= ly + lh + EXIT_PAD;
 
                 let is_hovering = if was_hovering { in_exit } else { in_activation };
 
@@ -169,25 +172,22 @@ fn start_widget_hover_tracker(widget: tauri::WebviewWindow) {
 
 // ── Windows cursor-polling hover tracker ─────────────────────────────────
 
-
-
 #[cfg(target_os = "windows")]
 fn start_widget_hover_tracker_win(widget: tauri::WebviewWindow) {
     use std::sync::atomic::Ordering;
     use windows::Win32::Foundation::POINT;
     use windows::Win32::UI::WindowsAndMessaging::GetCursorPos;
 
-    const POLL_MS: u64 = 30;       // faster polling → snappier response
+    const POLL_MS: u64 = 30; // faster polling → snappier response
     const PILL_HALF_W: f64 = 22.0; // half of 40px pill + 2px tolerance
-    const PILL_H: f64 = 12.0;      // collapsed pill height + 2px tolerance
-    const Y_PAD_TOP: f64 = 6.0;    // small tolerance above pill for approach
-    const Y_PAD_BOT: f64 = 2.0;    // tight: user exits downward fast
-    const EXIT_PAD: f64 = 2.0;     // jitter margin
-    // When expanded (no popup), the exit zone covers the expanded pill area.
-    // Expanded pill is 80×20 at bottom-center of the 80×64 window.
+    const PILL_H: f64 = 12.0; // collapsed pill height + 2px tolerance
+    const Y_PAD_TOP: f64 = 6.0; // small tolerance above pill for approach
+    const Y_PAD_BOT: f64 = 2.0; // tight: user exits downward fast
+    const EXIT_PAD: f64 = 2.0; // jitter margin
+                               // When expanded (no popup), the exit zone covers the expanded pill area.
+                               // Expanded pill is 80×20 at bottom-center of the 80×64 window.
     const EXPANDED_PILL_H: f64 = 24.0; // 20px pill + 4px buffer
     const EXPANDED_PILL_HALF_W: f64 = 42.0; // 40px half + 2px buffer
-
 
     std::thread::Builder::new()
         .name("furo-widget-hover-win".into())
@@ -197,9 +197,23 @@ fn start_widget_hover_tracker_win(widget: tauri::WebviewWindow) {
             loop {
                 std::thread::sleep(std::time::Duration::from_millis(POLL_MS));
 
+                if WIDGET_FULLSCREEN_ACTIVE.load(Ordering::Relaxed) {
+                    if widget.outer_position().is_err() {
+                        break;
+                    }
+                    if was_hovering {
+                        was_hovering = false;
+                        let _ = widget.emit("widget-hover", false);
+                    }
+                    let _ = widget.set_ignore_cursor_events(true);
+                    continue;
+                }
+
                 let cursor = {
                     let mut pt = POINT { x: 0, y: 0 };
-                    unsafe { let _ = GetCursorPos(&mut pt); }
+                    unsafe {
+                        let _ = GetCursorPos(&mut pt);
+                    }
                     pt
                 };
 
@@ -223,10 +237,9 @@ fn start_widget_hover_tracker_win(widget: tauri::WebviewWindow) {
                 let pill_h = PILL_H * scale;
 
                 // Activation: tight around the collapsed pill at bottom-center
-                let in_activation =
-                    (cursor.x as f64 - center_x).abs() <= half_w
-                        && cursor.y as f64 >= bottom_phys - pill_h - (Y_PAD_TOP * scale)
-                        && cursor.y as f64 <= bottom_phys + (Y_PAD_BOT * scale);
+                let in_activation = (cursor.x as f64 - center_x).abs() <= half_w
+                    && cursor.y as f64 >= bottom_phys - pill_h - (Y_PAD_TOP * scale)
+                    && cursor.y as f64 <= bottom_phys + (Y_PAD_BOT * scale);
 
                 // Exit zone depends on whether the popup is open.
                 let popup_open = WIDGET_POPUP_OPEN.load(Ordering::Relaxed);
@@ -311,9 +324,9 @@ mod cg_fullscreen {
 /// macOS: returns true if any non-Furo window currently fills any active display.
 #[cfg(target_os = "macos")]
 fn check_fullscreen_active(own_pid: i32) -> bool {
-    use std::ffi::{c_char, c_void};
     use cg_fullscreen::*;
     use objc::{class, msg_send, sel, sel_impl};
+    use std::ffi::{c_char, c_void};
 
     // kCGWindowListOptionOnScreenOnly | kCGWindowListExcludeDesktopElements
     const OPTS: u32 = 1 | 16;
@@ -331,11 +344,8 @@ fn check_fullscreen_active(own_pid: i32) -> bool {
     unsafe {
         let mut display_ids = [0u32; MAX_DISPLAYS as usize];
         let mut display_count = 0u32;
-        let cg_ok = CGGetActiveDisplayList(
-            MAX_DISPLAYS,
-            display_ids.as_mut_ptr(),
-            &mut display_count,
-        ) == 0;
+        let cg_ok =
+            CGGetActiveDisplayList(MAX_DISPLAYS, display_ids.as_mut_ptr(), &mut display_count) == 0;
 
         let mut display_rects = Vec::new();
         if cg_ok {
@@ -366,8 +376,7 @@ fn check_fullscreen_active(own_pid: i32) -> bool {
         let mut found_fullscreen = false;
 
         // NSString key creation and NSDictionary lookups use ObjC → need a pool.
-        let pool: *mut objc::runtime::Object =
-            msg_send![class!(NSAutoreleasePool), new];
+        let pool: *mut objc::runtime::Object = msg_send![class!(NSAutoreleasePool), new];
 
         'outer: for i in 0..count {
             let dict = CFArrayGetValueAtIndex(arr, i) as *mut objc::runtime::Object;
@@ -380,8 +389,7 @@ fn check_fullscreen_active(own_pid: i32) -> bool {
                 let s = b"kCGWindowOwnerPID\0";
                 msg_send![class!(NSString), stringWithUTF8String: s.as_ptr() as *const c_char]
             };
-            let pid_obj: *mut objc::runtime::Object =
-                msg_send![dict, objectForKey: key_pid];
+            let pid_obj: *mut objc::runtime::Object = msg_send![dict, objectForKey: key_pid];
             if !pid_obj.is_null() {
                 let pid: i32 = msg_send![pid_obj, intValue];
                 if pid == own_pid {
@@ -395,8 +403,7 @@ fn check_fullscreen_active(own_pid: i32) -> bool {
                 let s = b"kCGWindowLayer\0";
                 msg_send![class!(NSString), stringWithUTF8String: s.as_ptr() as *const c_char]
             };
-            let layer_obj: *mut objc::runtime::Object =
-                msg_send![dict, objectForKey: key_layer];
+            let layer_obj: *mut objc::runtime::Object = msg_send![dict, objectForKey: key_layer];
             if !layer_obj.is_null() {
                 let layer: i32 = msg_send![layer_obj, intValue];
                 if layer != 0 {
@@ -409,8 +416,7 @@ fn check_fullscreen_active(own_pid: i32) -> bool {
                 let s = b"kCGWindowAlpha\0";
                 msg_send![class!(NSString), stringWithUTF8String: s.as_ptr() as *const c_char]
             };
-            let alpha_obj: *mut objc::runtime::Object =
-                msg_send![dict, objectForKey: key_alpha];
+            let alpha_obj: *mut objc::runtime::Object = msg_send![dict, objectForKey: key_alpha];
             if !alpha_obj.is_null() {
                 let alpha: f64 = msg_send![alpha_obj, doubleValue];
                 if alpha < 0.9 {
@@ -423,17 +429,14 @@ fn check_fullscreen_active(own_pid: i32) -> bool {
                 let s = b"kCGWindowBounds\0";
                 msg_send![class!(NSString), stringWithUTF8String: s.as_ptr() as *const c_char]
             };
-            let bounds_obj: *mut objc::runtime::Object =
-                msg_send![dict, objectForKey: key_bounds];
+            let bounds_obj: *mut objc::runtime::Object = msg_send![dict, objectForKey: key_bounds];
             if bounds_obj.is_null() {
                 continue;
             }
 
             let mut rect = CGRect::default();
-            let ok: bool = CGRectMakeWithDictionaryRepresentation(
-                bounds_obj as *const c_void,
-                &mut rect,
-            );
+            let ok: bool =
+                CGRectMakeWithDictionaryRepresentation(bounds_obj as *const c_void, &mut rect);
             if !ok {
                 continue;
             }
@@ -507,16 +510,24 @@ fn check_fullscreen_active(own_pid: u32) -> bool {
             return false;
         }
 
-        // True if the active foreground window precisely matches its monitor's bounds
+        // GetWindowRect can include invisible resize borders, so use monitor
+        // coverage rather than exact equality. This still excludes normal
+        // maximized windows because they usually stop at the taskbar/work area.
         let mr = mi.rcMonitor;
-        wr.left == mr.left && wr.top == mr.top && wr.right == mr.right && wr.bottom == mr.bottom
+        const FULLSCREEN_TOLERANCE_PX: i32 = 2;
+        wr.left <= mr.left + FULLSCREEN_TOLERANCE_PX
+            && wr.top <= mr.top + FULLSCREEN_TOLERANCE_PX
+            && wr.right >= mr.right - FULLSCREEN_TOLERANCE_PX
+            && wr.bottom >= mr.bottom - FULLSCREEN_TOLERANCE_PX
     }
 }
 
 /// Cross-platform: spawn a background thread that polls for fullscreen state
 /// every 500 ms and emits `widget-fullscreen` (bool) into the widget WebView.
 fn start_fullscreen_tracker(widget: tauri::WebviewWindow) {
-    const POLL_MS: u64 = 500;
+    use std::sync::atomic::Ordering;
+
+    const POLL_MS: u64 = 250;
 
     std::thread::Builder::new()
         .name("furo-fullscreen".into())
@@ -542,6 +553,20 @@ fn start_fullscreen_tracker(widget: tauri::WebviewWindow) {
 
                 if is_fs != was_fullscreen {
                     was_fullscreen = is_fs;
+
+                    WIDGET_FULLSCREEN_ACTIVE.store(is_fs, Ordering::Relaxed);
+                    if is_fs {
+                        WIDGET_POPUP_OPEN.store(false, Ordering::Relaxed);
+                    }
+
+                    #[cfg(target_os = "windows")]
+                    {
+                        let _ = widget.set_ignore_cursor_events(true);
+                        if is_fs {
+                            let _ = widget.emit("widget-hover", false);
+                        }
+                    }
+
                     let _ = widget.emit("widget-fullscreen", is_fs);
                 }
             }
@@ -605,9 +630,11 @@ fn set_autostart(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
     use tauri_plugin_autostart::ManagerExt;
     let mgr = app.autolaunch();
     if enabled {
-        mgr.enable().map_err(|e| format!("Failed to enable autostart: {}", e))
+        mgr.enable()
+            .map_err(|e| format!("Failed to enable autostart: {}", e))
     } else {
-        mgr.disable().map_err(|e| format!("Failed to disable autostart: {}", e))
+        mgr.disable()
+            .map_err(|e| format!("Failed to disable autostart: {}", e))
     }
 }
 
@@ -660,8 +687,13 @@ fn diagnose_macos(pipeline: tauri::State<'_, Arc<FuroPipeline>>) -> String {
         #[cfg(target_os = "macos")]
         {
             let path_str = exe.display().to_string();
-            if path_str.contains("AppTranslocation") || path_str.starts_with("/private/var/folders/") {
-                lines.push("APP_TRANSLOCATION: true ⚠️ Drag Furo to /Applications and relaunch".to_string());
+            if path_str.contains("AppTranslocation")
+                || path_str.starts_with("/private/var/folders/")
+            {
+                lines.push(
+                    "APP_TRANSLOCATION: true ⚠️ Drag Furo to /Applications and relaunch"
+                        .to_string(),
+                );
             } else {
                 lines.push("APP_TRANSLOCATION: false".to_string());
             }
@@ -670,7 +702,9 @@ fn diagnose_macos(pipeline: tauri::State<'_, Arc<FuroPipeline>>) -> String {
         // Check Accessibility / Input Monitoring permission.
         #[cfg(target_os = "macos")]
         {
-            extern "C" { fn AXIsProcessTrusted() -> bool; }
+            extern "C" {
+                fn AXIsProcessTrusted() -> bool;
+            }
             let trusted = unsafe { AXIsProcessTrusted() };
             lines.push(format!("ACCESSIBILITY_TRUSTED: {}", trusted));
             if !trusted {
@@ -680,7 +714,11 @@ fn diagnose_macos(pipeline: tauri::State<'_, Arc<FuroPipeline>>) -> String {
 
         if let Some(exe_dir) = exe.parent() {
             // Check sidecar binary exists
-            let sidecar_name = if cfg!(target_os = "windows") { "whisper-server.exe" } else { "whisper-server" };
+            let sidecar_name = if cfg!(target_os = "windows") {
+                "whisper-server.exe"
+            } else {
+                "whisper-server"
+            };
             let sidecar_path = exe_dir.join(sidecar_name);
             let sidecar_exists = sidecar_path.exists();
             lines.push(format!("SIDECAR_PATH: {}", sidecar_path.display()));
@@ -715,7 +753,10 @@ fn diagnose_macos(pipeline: tauri::State<'_, Arc<FuroPipeline>>) -> String {
                         } else if stderr.contains("valid on disk") {
                             lines.push("CODESIGN: signed (valid)".to_string());
                         } else {
-                            lines.push(format!("CODESIGN: {}", stderr.lines().next().unwrap_or("unknown")));
+                            lines.push(format!(
+                                "CODESIGN: {}",
+                                stderr.lines().next().unwrap_or("unknown")
+                            ));
                         }
                     }
 
@@ -740,9 +781,16 @@ fn diagnose_macos(pipeline: tauri::State<'_, Arc<FuroPipeline>>) -> String {
     {
         Ok(client) => match client.get(&health_url).send() {
             Ok(resp) => {
-                lines.push(format!("WHISPER_STATUS: {} {}", resp.status().as_u16(), resp.status()));
+                lines.push(format!(
+                    "WHISPER_STATUS: {} {}",
+                    resp.status().as_u16(),
+                    resp.status()
+                ));
                 if let Ok(body) = resp.text() {
-                    lines.push(format!("WHISPER_BODY: {}", body.chars().take(200).collect::<String>()));
+                    lines.push(format!(
+                        "WHISPER_BODY: {}",
+                        body.chars().take(200).collect::<String>()
+                    ));
                 }
             }
             Err(e) => lines.push(format!("WHISPER_ERROR: {}", e)),
@@ -765,7 +813,10 @@ fn diagnose_macos(pipeline: tauri::State<'_, Arc<FuroPipeline>>) -> String {
     lines.push(format!("WHISPER_MODEL_EXISTS: {}", whisper_model.exists()));
     if whisper_model.exists() {
         if let Ok(meta) = whisper_model.metadata() {
-            lines.push(format!("WHISPER_MODEL_SIZE_MB: {:.0}", meta.len() as f64 / 1_048_576.0));
+            lines.push(format!(
+                "WHISPER_MODEL_SIZE_MB: {:.0}",
+                meta.len() as f64 / 1_048_576.0
+            ));
         }
     }
     let vad_model = models_dir.join(crate::config::VAD_MODEL_FILENAME);
@@ -774,14 +825,19 @@ fn diagnose_macos(pipeline: tauri::State<'_, Arc<FuroPipeline>>) -> String {
     // Sidecar crash state (from last spawn attempt)
     {
         let sidecar = pipeline.sidecar.lock();
-        let exited = sidecar.sidecar_exited.load(std::sync::atomic::Ordering::SeqCst);
+        let exited = sidecar
+            .sidecar_exited
+            .load(std::sync::atomic::Ordering::SeqCst);
         lines.push(format!("SIDECAR_EXITED: {}", exited));
         if exited {
             let stderr = sidecar.stderr_capture.lock();
             let last_lines: Vec<&str> = stderr.iter().rev().take(10).map(|s| s.as_str()).collect();
             let last_lines: Vec<&str> = last_lines.into_iter().rev().collect();
             if !last_lines.is_empty() {
-                lines.push(format!("SIDECAR_STDERR_LAST_LINES:\n{}", last_lines.join("\n")));
+                lines.push(format!(
+                    "SIDECAR_STDERR_LAST_LINES:\n{}",
+                    last_lines.join("\n")
+                ));
             }
         }
     }
@@ -791,7 +847,8 @@ fn diagnose_macos(pipeline: tauri::State<'_, Arc<FuroPipeline>>) -> String {
         use cpal::traits::{DeviceTrait, HostTrait};
         let host = cpal::default_host();
         if let Some(dev) = host.default_input_device() {
-            let name = dev.description()
+            let name = dev
+                .description()
                 .map(|d| d.name().to_string())
                 .unwrap_or_else(|_| "unknown".into());
             lines.push(format!("DEFAULT_MIC: {}", name));
@@ -831,8 +888,13 @@ fn diagnose_updater() -> String {
             let path_str = exe.display().to_string();
 
             // Check App Translocation
-            if path_str.contains("AppTranslocation") || path_str.starts_with("/private/var/folders/") {
-                lines.push("APP_TRANSLOCATION: true ⚠️ Updates CANNOT work from a translocated path".to_string());
+            if path_str.contains("AppTranslocation")
+                || path_str.starts_with("/private/var/folders/")
+            {
+                lines.push(
+                    "APP_TRANSLOCATION: true ⚠️ Updates CANNOT work from a translocated path"
+                        .to_string(),
+                );
             } else {
                 lines.push("APP_TRANSLOCATION: false".to_string());
             }
@@ -860,7 +922,10 @@ fn diagnose_updater() -> String {
                             lines.push(format!("APP_PARENT_DIR: {}", parent.display()));
                             lines.push(format!("APP_PARENT_WRITABLE: {}", parent_writable));
                             if !parent_writable {
-                                lines.push("⚠️ Cannot write to app directory — updater will fail".to_string());
+                                lines.push(
+                                    "⚠️ Cannot write to app directory — updater will fail"
+                                        .to_string(),
+                                );
                             }
                         }
 
@@ -885,7 +950,10 @@ fn diagnose_updater() -> String {
             let temp_vol = temp_dir.display().to_string();
             let temp_vol_part = temp_vol.split('/').nth(1).unwrap_or("");
             let same_volume = app_vol == temp_vol_part || app_vol == "Applications";
-            lines.push(format!("SAME_VOLUME: {} (app={}, temp={})", same_volume, app_vol, temp_vol_part));
+            lines.push(format!(
+                "SAME_VOLUME: {} (app={}, temp={})",
+                same_volume, app_vol, temp_vol_part
+            ));
         }
 
         #[cfg(target_os = "windows")]
@@ -914,6 +982,9 @@ fn diagnose_updater() -> String {
 
 #[tauri::command]
 fn widget_hold_start(pipeline: tauri::State<'_, Arc<FuroPipeline>>) {
+    if WIDGET_FULLSCREEN_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
+        return;
+    }
     pipeline.on_hold_press();
 }
 
@@ -928,9 +999,15 @@ fn widget_hold_release(pipeline: tauri::State<'_, Arc<FuroPipeline>>) {
 /// steals keyboard focus from the user's active text field.
 #[tauri::command]
 fn widget_set_size(app: tauri::AppHandle, width: f64, height: f64) {
-    let Some(win) = app.get_webview_window("widget") else { return };
-    let Ok(scale) = win.scale_factor() else { return };
-    let Ok(pos) = win.outer_position() else { return };
+    let Some(win) = app.get_webview_window("widget") else {
+        return;
+    };
+    let Ok(scale) = win.scale_factor() else {
+        return;
+    };
+    let Ok(pos) = win.outer_position() else {
+        return;
+    };
     let Ok(size) = win.outer_size() else { return };
 
     // Convert physical → logical for anchor math
@@ -994,7 +1071,9 @@ fn repaste_last(text: String, pipeline: tauri::State<'_, Arc<FuroPipeline>>) {
 /// On Windows uses SetWindowPos(SWP_NOACTIVATE) so the move never steals focus.
 #[tauri::command]
 fn widget_reposition(app: tauri::AppHandle, x: i32, y: i32) {
-    let Some(win) = app.get_webview_window("widget") else { return };
+    let Some(win) = app.get_webview_window("widget") else {
+        return;
+    };
 
     #[cfg(target_os = "windows")]
     {
@@ -1026,23 +1105,38 @@ fn widget_reposition(app: tauri::AppHandle, x: i32, y: i32) {
 #[tauri::command]
 fn set_click_through(window: tauri::Window, ignore: bool) {
     // This tells the OS to ignore clicks on transparent areas of the window
-    if let Err(e) = window.set_ignore_cursor_events(ignore) {
+    let effective_ignore =
+        ignore || WIDGET_FULLSCREEN_ACTIVE.load(std::sync::atomic::Ordering::Relaxed);
+    if let Err(e) = window.set_ignore_cursor_events(effective_ignore) {
         log::warn!("set_click_through failed: {}", e);
     }
 }
 
 #[tauri::command]
 fn widget_set_popup(open: bool) {
-    WIDGET_POPUP_OPEN.store(open, std::sync::atomic::Ordering::Relaxed);
+    let fullscreen_active = WIDGET_FULLSCREEN_ACTIVE.load(std::sync::atomic::Ordering::Relaxed);
+    WIDGET_POPUP_OPEN.store(
+        open && !fullscreen_active,
+        std::sync::atomic::Ordering::Relaxed,
+    );
 }
 
 // ── Tray menu
 
-fn build_tray_menu(app: &tauri::App) -> Result<tauri::menu::Menu<tauri::Wry>, Box<dyn std::error::Error>> {
+fn build_tray_menu(
+    app: &tauri::App,
+) -> Result<tauri::menu::Menu<tauri::Wry>, Box<dyn std::error::Error>> {
     let open_item = MenuItemBuilder::new("Open Furo").id("open").build(app)?;
-    let update_item = MenuItemBuilder::new("Check for Update").id("check_update").build(app)?;
+    let update_item = MenuItemBuilder::new("Check for Update")
+        .id("check_update")
+        .build(app)?;
     let quit_item = MenuItemBuilder::new("Quit").id("quit").build(app)?;
-    Ok(MenuBuilder::new(app).item(&open_item).item(&update_item).separator().item(&quit_item).build()?)
+    Ok(MenuBuilder::new(app)
+        .item(&open_item)
+        .item(&update_item)
+        .separator()
+        .item(&quit_item)
+        .build()?)
 }
 // ── Application entry
 
@@ -1056,7 +1150,10 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_shell::init())
-        .plugin(tauri_plugin_autostart::init(MacosLauncher::LaunchAgent, None))
+        .plugin(tauri_plugin_autostart::init(
+            MacosLauncher::LaunchAgent,
+            None,
+        ))
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
         .invoke_handler(tauri::generate_handler![
@@ -1101,7 +1198,11 @@ pub fn run() {
             let x = (screen_size.width as f64 / scale - widget_w) / 2.0;
             // macOS Dock occupies ~70-90px at bottom; use a larger offset so
             // the pill isn't hidden behind it.
-            let bottom_offset: f64 = if cfg!(target_os = "macos") { 100.0 } else { 60.0 };
+            let bottom_offset: f64 = if cfg!(target_os = "macos") {
+                100.0
+            } else {
+                60.0
+            };
             let y = screen_size.height as f64 / scale - widget_h - bottom_offset;
 
             let builder = WebviewWindowBuilder::new(
@@ -1214,7 +1315,9 @@ pub fn run() {
                                 ns_window,
                                 setBecomesKeyOnlyIfNeeded: objc::runtime::YES
                             ];
-                            log::info!("Widget is NSPanel — setBecomesKeyOnlyIfNeeded:YES applied.");
+                            log::info!(
+                                "Widget is NSPanel — setBecomesKeyOnlyIfNeeded:YES applied."
+                            );
                         }
                     }
                     log::info!("Widget NSWindow configured as non-activating floating panel.");
@@ -1245,27 +1348,30 @@ pub fn run() {
                 tray_builder = tray_builder.icon(icon);
             }
             let _tray = tray_builder
-                .on_menu_event(move |app_handle: &tauri::AppHandle<tauri::Wry>, event: tauri::menu::MenuEvent| {
-                    match event.id().as_ref() {
-                        "open" => {
-                            if let Some(w) = app_handle.get_webview_window("main") {
-                                let _ = w.show();
-                                let _ = w.set_focus();
+                .on_menu_event(
+                    move |app_handle: &tauri::AppHandle<tauri::Wry>,
+                          event: tauri::menu::MenuEvent| {
+                        match event.id().as_ref() {
+                            "open" => {
+                                if let Some(w) = app_handle.get_webview_window("main") {
+                                    let _ = w.show();
+                                    let _ = w.set_focus();
+                                }
                             }
-                        }
-                        "check_update" => {
-                            if let Some(w) = app_handle.get_webview_window("main") {
-                                let _ = w.show();
-                                let _ = w.set_focus();
+                            "check_update" => {
+                                if let Some(w) = app_handle.get_webview_window("main") {
+                                    let _ = w.show();
+                                    let _ = w.set_focus();
+                                }
+                                let _ = app_handle.emit("furo://check-update", ());
                             }
-                            let _ = app_handle.emit("furo://check-update", ());
+                            "quit" => {
+                                app_handle.exit(0);
+                            }
+                            _ => {}
                         }
-                        "quit" => {
-                            app_handle.exit(0);
-                        }
-                        _ => {}
-                    }
-                })
+                    },
+                )
                 .build(app)?;
 
             // ── Start backend pipeline ──────────────────────────

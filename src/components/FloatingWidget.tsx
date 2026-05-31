@@ -97,11 +97,26 @@ export function FloatingWidget() {
   const [copied, setCopied] = useState(false);
   const [persistedText, setPersistedText] = useState("");
   const isHoldingRef = useRef(false);
+  const fullscreenRef = useRef(false);
   const lastMonitorIdRef = useRef("");
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const expanded = isActive || isHovered || showPopup;
   const displayText = lastText || persistedText;
+
+  const resetInteractiveState = () => {
+    if (hoverTimer.current) {
+      clearTimeout(hoverTimer.current);
+      hoverTimer.current = null;
+    }
+    setIsHovered(false);
+    setShowPopup(false);
+    if (IS_TAURI) invoke("widget_set_popup", { open: false }).catch(() => {});
+    if (isHoldingRef.current) {
+      isHoldingRef.current = false;
+      if (IS_TAURI) invoke("widget_hold_release").catch(() => {});
+    }
+  };
 
   // ── Static Oversized Window (Fixes Flickering) ────────────────
   useEffect(() => {
@@ -149,10 +164,12 @@ export function FloatingWidget() {
   useEffect(() => {
     if (!IS_TAURI) return;
     const unsub = listen<boolean>("widget-fullscreen", (e) => {
+      fullscreenRef.current = e.payload;
       setIsFullscreen(e.payload);
-      if (e.payload) setShowPopup(false);
+      if (e.payload) resetInteractiveState();
     });
     return () => { unsub.then((fn) => fn()); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── Widget is always visible (created with visible:true, never hidden) ──
@@ -204,10 +221,18 @@ export function FloatingWidget() {
   // (set_ignore_cursor_events). React only manages visual state here.
 
   const handleEnter = () => {
+    if (fullscreenRef.current) {
+      resetInteractiveState();
+      return;
+    }
     if (hoverTimer.current) { clearTimeout(hoverTimer.current); hoverTimer.current = null; }
     setIsHovered(true);
   };
   const handleLeave = () => {
+    if (fullscreenRef.current) {
+      resetInteractiveState();
+      return;
+    }
     if (hoverTimer.current) { clearTimeout(hoverTimer.current); }
     hoverTimer.current = setTimeout(() => {
       setIsHovered(false);
@@ -239,10 +264,22 @@ export function FloatingWidget() {
   // ── Mouse-hold dictation (left-click) ─────────────────────────
   const handleMouseDown = (e: React.MouseEvent) => {
     if (e.button !== 0) return;
+    if (fullscreenRef.current) {
+      e.preventDefault();
+      e.stopPropagation();
+      return;
+    }
     isHoldingRef.current = true;
     invoke("widget_hold_start").catch(() => {});
   };
   const handleMouseUp = (e: React.MouseEvent) => {
+    if (fullscreenRef.current) {
+      if (isHoldingRef.current) {
+        isHoldingRef.current = false;
+        invoke("widget_hold_release").catch(() => {});
+      }
+      return;
+    }
     if (e.button !== 0 || !isHoldingRef.current) return;
     isHoldingRef.current = false;
     invoke("widget_hold_release").catch(() => {});
@@ -252,6 +289,10 @@ export function FloatingWidget() {
   const handleContextMenu = (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (fullscreenRef.current) {
+      resetInteractiveState();
+      return;
+    }
     setShowPopup((prev) => {
       const next = !prev;
       if (IS_TAURI) invoke("widget_set_popup", { open: next }).catch(() => {});
@@ -263,6 +304,7 @@ export function FloatingWidget() {
   const handleBoxClick = async (e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
+    if (fullscreenRef.current) return;
     if (!displayText) return;
     try { await navigator.clipboard.writeText(displayText); } catch { /* ignore */ }
     setCopied(true);
