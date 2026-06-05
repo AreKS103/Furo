@@ -261,6 +261,20 @@ fn start_widget_hover_tracker_win(widget: tauri::WebviewWindow) {
 
                 let is_hovering = if was_hovering { in_exit } else { in_activation };
 
+                if (in_activation || was_hovering) && check_fullscreen_active(std::process::id()) {
+                    let already_fullscreen = WIDGET_FULLSCREEN_ACTIVE.swap(true, Ordering::Relaxed);
+                    WIDGET_POPUP_OPEN.store(false, Ordering::Relaxed);
+                    if was_hovering {
+                        was_hovering = false;
+                        let _ = widget.emit("widget-hover", false);
+                    }
+                    let _ = widget.set_ignore_cursor_events(true);
+                    if !already_fullscreen {
+                        let _ = widget.emit("widget-fullscreen", true);
+                    }
+                    continue;
+                }
+
                 if is_hovering != was_hovering {
                     was_hovering = is_hovering;
                     let _ = widget.set_ignore_cursor_events(!is_hovering);
@@ -272,15 +286,16 @@ fn start_widget_hover_tracker_win(widget: tauri::WebviewWindow) {
         .ok();
 }
 // ── Fullscreen detection ──────────────────────────────────────────────────
-// Polls every 500 ms to detect whether any external application is using the
+// Polls every 250 ms to detect whether any external application is using the
 // full screen (browser fullscreen, VLC, Windows Video Player, YouTube, etc.).
 // Emits `widget-fullscreen` (bool) so the widget can fade out gracefully.
 //
-// macOS implementation uses CGWindowListCopyWindowInfo to check if any
-// non-Furo, normal-level window fills the main display's logical resolution.
+// macOS implementation uses CGWindowListCopyWindowInfo to check the foreground
+// normal window and the top normal window on the cursor's active display.
 //
-// Windows implementation uses GetForegroundWindow + GetMonitorInfo to check
-// if the foreground window exactly covers its monitor.
+// Windows implementation checks the foreground window, the window under the
+// cursor, and the top significant window on the cursor's monitor so fullscreen
+// video on a secondary monitor hides the widget before that monitor is clicked.
 
 /// macOS: FFI for window-list-based fullscreen detection.
 #[cfg(target_os = "macos")]
@@ -367,18 +382,51 @@ fn check_fullscreen_active(own_pid: i32) -> bool {
             return false;
         }
 
+        let cursor_display = {
+            let ev = cg_cursor::CGEventCreate(std::ptr::null());
+            if ev.is_null() {
+                None
+            } else {
+                let cursor = cg_cursor::CGEventGetLocation(ev);
+                cg_cursor::CFRelease(ev);
+                display_rects.iter().copied().find(|screen| {
+                    cursor.x >= screen.x
+                        && cursor.x < screen.x + screen.width
+                        && cursor.y >= screen.y
+                        && cursor.y < screen.y + screen.height
+                })
+            }
+        };
+
         let arr = CGWindowListCopyWindowInfo(OPTS, 0 /* kCGNullWindowID */);
         if arr.is_null() {
             return false;
         }
 
         let count = CFArrayGetCount(arr);
-        let mut found_fullscreen = false;
+        let mut foreground_fullscreen = false;
+        let mut foreground_decided = false;
+        let mut cursor_display_fullscreen = false;
+        let mut cursor_display_decided = cursor_display.is_none();
+
+        let rect_covers_display = |rect: &CGRect, screen: &CGRect| -> bool {
+            (rect.x - screen.x).abs() <= 2.0
+                && (rect.y - screen.y).abs() <= 2.0
+                && (rect.width - screen.width).abs() <= 2.0
+                && (rect.height - screen.height).abs() <= 2.0
+        };
+
+        let rect_intersects_display = |rect: &CGRect, screen: &CGRect| -> bool {
+            rect.x < screen.x + screen.width
+                && rect.x + rect.width > screen.x
+                && rect.y < screen.y + screen.height
+                && rect.y + rect.height > screen.y
+        };
 
         // NSString key creation and NSDictionary lookups use ObjC → need a pool.
         let pool: *mut objc::runtime::Object = msg_send![class!(NSAutoreleasePool), new];
 
-        'outer: for i in 0..count {
+        for i in 0..count {
             let dict = CFArrayGetValueAtIndex(arr, i) as *mut objc::runtime::Object;
             if dict.is_null() {
                 continue;
@@ -441,89 +489,476 @@ fn check_fullscreen_active(own_pid: i32) -> bool {
                 continue;
             }
 
-            // ── Check if the topmost valid window fills any active display (±2pt tolerance) ──
-            // Since windows are ordered front-to-back, the first opaque layer-0 window
-            // determines if the user's *foreground* context is a fullscreen app.
-            found_fullscreen = display_rects.iter().any(|screen| {
-                (rect.x - screen.x).abs() <= 2.0
-                    && (rect.y - screen.y).abs() <= 2.0
-                    && (rect.width - screen.width).abs() <= 2.0
-                    && (rect.height - screen.height).abs() <= 2.0
-            });
-            break 'outer;
+            // Windows are ordered front-to-back globally. The first opaque
+            // layer-0 window decides the foreground context; the first such
+            // window intersecting the cursor's display decides hover context.
+            if !foreground_decided {
+                foreground_fullscreen = display_rects
+                    .iter()
+                    .any(|screen| rect_covers_display(&rect, screen));
+                foreground_decided = true;
+            }
+
+            if let Some(screen) = cursor_display {
+                if !cursor_display_decided && rect_intersects_display(&rect, &screen) {
+                    cursor_display_fullscreen = rect_covers_display(&rect, &screen);
+                    cursor_display_decided = true;
+                }
+            }
+
+            if foreground_fullscreen || (foreground_decided && cursor_display_decided) {
+                break;
+            }
         }
 
         let () = msg_send![pool, drain];
         CFRelease(arr);
-        found_fullscreen
+        foreground_fullscreen || cursor_display_fullscreen
     }
 }
 
-/// Windows: returns true if the foreground window fills its monitor.
 #[cfg(target_os = "windows")]
-fn check_fullscreen_active(own_pid: u32) -> bool {
-    use windows::Win32::Foundation::RECT;
-    use windows::Win32::Graphics::Gdi::{
-        GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
-    };
-    use windows::Win32::UI::WindowsAndMessaging::{
-        GetClassNameW, GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId,
+struct WindowsWindowContext {
+    hwnd: windows::Win32::Foundation::HWND,
+    pid: u32,
+    rect: windows::Win32::Foundation::RECT,
+    class_name: String,
+    title: String,
+    process_name: String,
+}
+
+#[cfg(target_os = "windows")]
+fn windows_window_class_name(hwnd: windows::Win32::Foundation::HWND) -> String {
+    use windows::Win32::UI::WindowsAndMessaging::GetClassNameW;
+
+    unsafe {
+        let mut class_name = [0u16; 256];
+        let len = GetClassNameW(hwnd, &mut class_name);
+        if len <= 0 {
+            return String::new();
+        }
+        String::from_utf16_lossy(&class_name[..len as usize])
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_window_title(hwnd: windows::Win32::Foundation::HWND) -> String {
+    use windows::Win32::UI::WindowsAndMessaging::{GetWindowTextLengthW, GetWindowTextW};
+
+    unsafe {
+        let len = GetWindowTextLengthW(hwnd);
+        if len <= 0 {
+            return String::new();
+        }
+
+        let mut title = vec![0u16; len as usize + 1];
+        let copied = GetWindowTextW(hwnd, &mut title);
+        if copied <= 0 {
+            return String::new();
+        }
+        String::from_utf16_lossy(&title[..copied as usize])
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_process_name(pid: u32) -> String {
+    use windows::core::PWSTR;
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+        PROCESS_QUERY_LIMITED_INFORMATION,
     };
 
     unsafe {
-        let hwnd = GetForegroundWindow();
-        if hwnd.0.is_null() {
-            return false;
+        let Ok(handle) = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) else {
+            return String::new();
+        };
+
+        let mut path = vec![0u16; 32_768];
+        let mut size = path.len() as u32;
+        let ok = QueryFullProcessImageNameW(
+            handle,
+            PROCESS_NAME_WIN32,
+            PWSTR(path.as_mut_ptr()),
+            &mut size,
+        )
+        .is_ok();
+        let _ = CloseHandle(handle);
+
+        if !ok || size == 0 {
+            return String::new();
         }
+
+        let full_path = String::from_utf16_lossy(&path[..size as usize]);
+        std::path::Path::new(&full_path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase()
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_is_ignored_class(class_name: &str) -> bool {
+    matches!(
+        class_name,
+        "Progman"
+            | "WorkerW"
+            | "Shell_TrayWnd"
+            | "Shell_SecondaryTrayWnd"
+            | "NotifyIconOverflowWindow"
+            | "DV2ControlHost"
+            | "MsgrIMEWindowClass"
+            | "SysShadow"
+            | "tooltips_class32"
+    )
+}
+
+#[cfg(target_os = "windows")]
+fn windows_window_context(
+    hwnd: windows::Win32::Foundation::HWND,
+    own_pid: u32,
+) -> Option<WindowsWindowContext> {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetAncestor, GetWindowRect, GetWindowThreadProcessId, IsWindowVisible, GA_ROOT,
+    };
+
+    unsafe {
+        if hwnd.0.is_null() {
+            return None;
+        }
+
+        let root = GetAncestor(hwnd, GA_ROOT);
+        let hwnd = if root.0.is_null() { hwnd } else { root };
 
         let mut pid = 0u32;
         GetWindowThreadProcessId(hwnd, Some(&mut pid as *mut u32));
         if pid == 0 || pid == own_pid {
-            return false;
+            return None;
         }
 
-        let mut class_name = [0u16; 256];
-        let len = GetClassNameW(hwnd, &mut class_name);
-        let class_string = String::from_utf16_lossy(&class_name[..len as usize]);
-        if class_string == "Progman" || class_string == "WorkerW" {
-            return false;
+        if !IsWindowVisible(hwnd).as_bool() {
+            return None;
         }
 
-        let mut wr = RECT::default();
-        if GetWindowRect(hwnd, &mut wr).is_err() {
-            return false;
+        let class_name = windows_window_class_name(hwnd);
+        if windows_is_ignored_class(&class_name) {
+            return None;
         }
 
-        // Fullscreen windows should span at least 640x480 (filters out tiny overlays)
-        let w = wr.right - wr.left;
-        let h = wr.bottom - wr.top;
-        if w < 640 || h < 480 {
-            return false;
+        let mut rect = windows::Win32::Foundation::RECT::default();
+        if GetWindowRect(hwnd, &mut rect).is_err() {
+            return None;
         }
 
+        let width = rect.right - rect.left;
+        let height = rect.bottom - rect.top;
+        if width < 120 || height < 80 {
+            return None;
+        }
+
+        Some(WindowsWindowContext {
+            hwnd,
+            pid,
+            rect,
+            class_name,
+            title: windows_window_title(hwnd),
+            process_name: windows_process_name(pid),
+        })
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_rect_intersects(
+    a: &windows::Win32::Foundation::RECT,
+    b: &windows::Win32::Foundation::RECT,
+) -> bool {
+    a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top
+}
+
+#[cfg(target_os = "windows")]
+fn windows_monitor_rect_from_window(
+    hwnd: windows::Win32::Foundation::HWND,
+) -> Option<windows::Win32::Foundation::RECT> {
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
+
+    unsafe {
         let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
-        let mut mi = MONITORINFO {
+        let mut info = MONITORINFO {
             cbSize: std::mem::size_of::<MONITORINFO>() as u32,
             ..Default::default()
         };
-        if !GetMonitorInfoW(monitor, &mut mi).as_bool() {
+        if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+            return None;
+        }
+        Some(info.rcMonitor)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_monitor_rect_from_point(
+    point: windows::Win32::Foundation::POINT,
+) -> Option<windows::Win32::Foundation::RECT> {
+    use windows::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MonitorFromPoint, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+    };
+
+    unsafe {
+        let monitor = MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST);
+        let mut info = MONITORINFO {
+            cbSize: std::mem::size_of::<MONITORINFO>() as u32,
+            ..Default::default()
+        };
+        if !GetMonitorInfoW(monitor, &mut info).as_bool() {
+            return None;
+        }
+        Some(info.rcMonitor)
+    }
+}
+
+#[cfg(target_os = "windows")]
+fn windows_window_covers_monitor(
+    window_rect: &windows::Win32::Foundation::RECT,
+    monitor_rect: &windows::Win32::Foundation::RECT,
+) -> bool {
+    let width = window_rect.right - window_rect.left;
+    let height = window_rect.bottom - window_rect.top;
+    if width < 640 || height < 480 {
+        return false;
+    }
+
+    const FULLSCREEN_TOLERANCE_PX: i32 = 2;
+    window_rect.left <= monitor_rect.left + FULLSCREEN_TOLERANCE_PX
+        && window_rect.top <= monitor_rect.top + FULLSCREEN_TOLERANCE_PX
+        && window_rect.right >= monitor_rect.right - FULLSCREEN_TOLERANCE_PX
+        && window_rect.bottom >= monitor_rect.bottom - FULLSCREEN_TOLERANCE_PX
+}
+
+#[cfg(target_os = "windows")]
+fn windows_is_browser_or_editor_context(context: &WindowsWindowContext) -> bool {
+    let class_name = context.class_name.to_ascii_lowercase();
+    let process_name = context.process_name.as_str();
+
+    class_name.contains("chrome_widgetwin")
+        || class_name.contains("mozillawindowclass")
+        || matches!(
+            process_name,
+            "chrome.exe"
+                | "msedge.exe"
+                | "firefox.exe"
+                | "brave.exe"
+                | "opera.exe"
+                | "code.exe"
+                | "cursor.exe"
+                | "windsurf.exe"
+                | "slack.exe"
+                | "discord.exe"
+        )
+}
+
+#[cfg(target_os = "windows")]
+fn windows_is_game_window(context: &WindowsWindowContext) -> bool {
+    let class_name = context.class_name.to_ascii_lowercase();
+    let title = context.title.to_ascii_lowercase();
+    let process_name = context.process_name.as_str();
+
+    let known_editor_process = matches!(
+        process_name,
+        "unity.exe" | "unrealeditor.exe" | "ue4editor.exe" | "godot.exe" | "blender.exe"
+    );
+    if known_editor_process {
+        return false;
+    }
+
+    if class_name.contains("lwjgl")
+        || class_name.contains("glfw")
+        || class_name.contains("unitywndclass")
+        || class_name.contains("unrealwindow")
+        || class_name.contains("sdl_app")
+        || class_name.contains("sfml")
+    {
+        return true;
+    }
+
+    if matches!(
+        process_name,
+        "minecraft.windows.exe"
+            | "robloxplayerbeta.exe"
+            | "robloxplayerlauncher.exe"
+            | "fortniteclient-win64-shipping.exe"
+            | "valorant-win64-shipping.exe"
+            | "valorant.exe"
+            | "league of legends.exe"
+            | "rocketleague.exe"
+            | "genshinimpact.exe"
+            | "starrail.exe"
+            | "overwatch.exe"
+            | "dota2.exe"
+            | "cs2.exe"
+            | "csgo.exe"
+            | "r5apex.exe"
+            | "terraria.exe"
+            | "stardew valley.exe"
+            | "eldenring.exe"
+            | "palworld-win64-shipping.exe"
+            | "warframe.x64.exe"
+            | "wow.exe"
+            | "ffxiv_dx11.exe"
+            | "among us.exe"
+            | "escapefromtarkov.exe"
+            | "rainbowsix.exe"
+            | "r6siege.exe"
+            | "bf2042.exe"
+            | "cod.exe"
+            | "cod22-cod.exe"
+    ) {
+        return true;
+    }
+
+    if matches!(process_name, "javaw.exe" | "java.exe") {
+        return title.contains("minecraft")
+            || class_name.contains("lwjgl")
+            || class_name.contains("glfw");
+    }
+
+    if process_name.ends_with("-win64-shipping.exe") {
+        return true;
+    }
+
+    if windows_is_browser_or_editor_context(context) {
+        return false;
+    }
+
+    [
+        "minecraft",
+        "roblox",
+        "fortnite",
+        "valorant",
+        "league of legends",
+        "rocket league",
+        "genshin impact",
+        "honkai",
+        "overwatch",
+        "dota 2",
+        "counter-strike",
+        "apex legends",
+        "terraria",
+        "stardew valley",
+        "elden ring",
+        "palworld",
+        "warframe",
+        "world of warcraft",
+        "final fantasy xiv",
+        "among us",
+        "escape from tarkov",
+        "rainbow six",
+        "battlefield",
+        "call of duty",
+    ]
+    .iter()
+    .any(|hint| title.contains(hint))
+}
+
+#[cfg(target_os = "windows")]
+struct WindowsMonitorSearch {
+    own_pid: u32,
+    monitor_rect: windows::Win32::Foundation::RECT,
+    suppress: bool,
+    found_significant_window: bool,
+}
+
+#[cfg(target_os = "windows")]
+unsafe extern "system" fn windows_enum_monitor_window(
+    hwnd: windows::Win32::Foundation::HWND,
+    lparam: windows::Win32::Foundation::LPARAM,
+) -> windows::Win32::Foundation::BOOL {
+    let search = &mut *(lparam.0 as *mut WindowsMonitorSearch);
+    let Some(context) = windows_window_context(hwnd, search.own_pid) else {
+        return windows::Win32::Foundation::BOOL(1);
+    };
+
+    if !windows_rect_intersects(&context.rect, &search.monitor_rect) {
+        return windows::Win32::Foundation::BOOL(1);
+    }
+
+    search.found_significant_window = true;
+    search.suppress = windows_is_game_window(&context)
+        || windows_window_covers_monitor(&context.rect, &search.monitor_rect);
+    windows::Win32::Foundation::BOOL(0)
+}
+
+#[cfg(target_os = "windows")]
+fn windows_top_context_on_monitor_suppresses_widget(
+    own_pid: u32,
+    monitor_rect: windows::Win32::Foundation::RECT,
+) -> bool {
+    use windows::Win32::Foundation::LPARAM;
+    use windows::Win32::UI::WindowsAndMessaging::EnumWindows;
+
+    let mut search = WindowsMonitorSearch {
+        own_pid,
+        monitor_rect,
+        suppress: false,
+        found_significant_window: false,
+    };
+
+    unsafe {
+        let _ = EnumWindows(
+            Some(windows_enum_monitor_window),
+            LPARAM((&mut search as *mut WindowsMonitorSearch) as isize),
+        );
+    }
+
+    search.found_significant_window && search.suppress
+}
+
+/// Windows: returns true when the widget should be suppressed for the current
+/// user context: active fullscreen, cursor monitor fullscreen, or game window.
+#[cfg(target_os = "windows")]
+fn check_fullscreen_active(own_pid: u32) -> bool {
+    use windows::Win32::Foundation::POINT;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetCursorPos, GetForegroundWindow, WindowFromPoint,
+    };
+
+    unsafe {
+        let foreground = GetForegroundWindow();
+        if let Some(context) = windows_window_context(foreground, own_pid) {
+            if windows_is_game_window(&context) {
+                return true;
+            }
+
+            if let Some(monitor_rect) = windows_monitor_rect_from_window(context.hwnd) {
+                if windows_window_covers_monitor(&context.rect, &monitor_rect) {
+                    return true;
+                }
+            }
+        }
+
+        let mut cursor = POINT { x: 0, y: 0 };
+        if GetCursorPos(&mut cursor).is_err() {
             return false;
         }
 
-        // GetWindowRect can include invisible resize borders, so use monitor
-        // coverage rather than exact equality. This still excludes normal
-        // maximized windows because they usually stop at the taskbar/work area.
-        let mr = mi.rcMonitor;
-        const FULLSCREEN_TOLERANCE_PX: i32 = 2;
-        wr.left <= mr.left + FULLSCREEN_TOLERANCE_PX
-            && wr.top <= mr.top + FULLSCREEN_TOLERANCE_PX
-            && wr.right >= mr.right - FULLSCREEN_TOLERANCE_PX
-            && wr.bottom >= mr.bottom - FULLSCREEN_TOLERANCE_PX
+        let cursor_window = WindowFromPoint(cursor);
+        if let Some(context) = windows_window_context(cursor_window, own_pid) {
+            if windows_is_game_window(&context) {
+                return true;
+            }
+        }
+
+        windows_monitor_rect_from_point(cursor)
+            .map(|monitor_rect| {
+                windows_top_context_on_monitor_suppresses_widget(own_pid, monitor_rect)
+            })
+            .unwrap_or(false)
     }
 }
 
 /// Cross-platform: spawn a background thread that polls for fullscreen state
-/// every 500 ms and emits `widget-fullscreen` (bool) into the widget WebView.
+/// every 250 ms and emits `widget-fullscreen` (bool) into the widget WebView.
 fn start_fullscreen_tracker(widget: tauri::WebviewWindow) {
     use std::sync::atomic::Ordering;
 
@@ -551,7 +986,8 @@ fn start_fullscreen_tracker(widget: tauri::WebviewWindow) {
                 #[cfg(not(any(target_os = "macos", target_os = "windows")))]
                 let is_fs = false;
 
-                if is_fs != was_fullscreen {
+                let global_fullscreen = WIDGET_FULLSCREEN_ACTIVE.load(Ordering::Relaxed);
+                if is_fs != was_fullscreen || global_fullscreen != is_fs {
                     was_fullscreen = is_fs;
 
                     WIDGET_FULLSCREEN_ACTIVE.store(is_fs, Ordering::Relaxed);

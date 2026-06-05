@@ -23,4 +23,3 @@ pub struct CapturedTarget {
     pub parent: isize,
     pub child: isize,
 }
-

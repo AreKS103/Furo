@@ -11,9 +11,7 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 
-use super::{
-    hotkey_worker, parse_hotkey_combo, HotkeyCallbacks, HotkeyEvent, MouseButton,
-};
+use super::{hotkey_worker, parse_hotkey_combo, HotkeyCallbacks, HotkeyEvent, MouseButton};
 
 // ── CoreGraphics FFI ──────────────────────────────────────────────────────
 
@@ -56,7 +54,12 @@ extern "C" {
         place: u32,
         options: u32,
         events_of_interest: CGEventMask,
-        callback: extern "C" fn(CGEventTapProxy, CGEventType, CGEventRef, *mut c_void) -> CGEventRef,
+        callback: extern "C" fn(
+            CGEventTapProxy,
+            CGEventType,
+            CGEventRef,
+            *mut c_void,
+        ) -> CGEventRef,
         user_info: *mut c_void,
     ) -> CFMachPortRef;
     fn CGEventGetIntegerValueField(event: CGEventRef, field: u32) -> i64;
@@ -226,7 +229,7 @@ fn mac_keycode_to_vk(keycode: u16) -> u32 {
         0x74 => 0x21, // PageUp
         0x79 => 0x22, // PageDown
         0x75 => 0x2E, // Forward Delete
-        _ => 0, // Unknown — ignored
+        _ => 0,       // Unknown — ignored
     }
 }
 
@@ -267,24 +270,33 @@ extern "C" fn event_tap_callback(
 
     match event_type {
         KCG_EVENT_KEY_DOWN => {
-            let keycode = unsafe { CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_KEYCODE) } as u16;
+            let keycode =
+                unsafe { CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_KEYCODE) } as u16;
             let vk = mac_keycode_to_vk(keycode);
             if vk != 0 {
-                let _ = sender.try_send(HotkeyEvent::KeyPress { vk, injected: false });
+                let _ = sender.try_send(HotkeyEvent::KeyPress {
+                    vk,
+                    injected: false,
+                });
             }
         }
         KCG_EVENT_KEY_UP => {
-            let keycode = unsafe { CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_KEYCODE) } as u16;
+            let keycode =
+                unsafe { CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_KEYCODE) } as u16;
             let vk = mac_keycode_to_vk(keycode);
             if vk != 0 {
-                let _ = sender.try_send(HotkeyEvent::KeyRelease { vk, injected: false });
+                let _ = sender.try_send(HotkeyEvent::KeyRelease {
+                    vk,
+                    injected: false,
+                });
             }
         }
         KCG_EVENT_FLAGS_CHANGED => {
             // Modifier-only events: detect press vs release by comparing with previous flags.
             let flags = unsafe { CGEventGetFlags(event) };
             let prev = PREV_FLAGS.swap(flags, Ordering::SeqCst);
-            let keycode = unsafe { CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_KEYCODE) } as u16;
+            let keycode =
+                unsafe { CGEventGetIntegerValueField(event, KCG_KEYBOARD_EVENT_KEYCODE) } as u16;
             let vk = mac_keycode_to_vk(keycode);
             if vk != 0 {
                 // Check the specific modifier bit to determine press vs release.
@@ -299,27 +311,42 @@ extern "C" fn event_tap_callback(
                     let was_down = (prev & mask) != 0;
                     let is_down = (flags & mask) != 0;
                     if is_down && !was_down {
-                        let _ = sender.try_send(HotkeyEvent::KeyPress { vk, injected: false });
+                        let _ = sender.try_send(HotkeyEvent::KeyPress {
+                            vk,
+                            injected: false,
+                        });
                     } else if !is_down && was_down {
-                        let _ = sender.try_send(HotkeyEvent::KeyRelease { vk, injected: false });
+                        let _ = sender.try_send(HotkeyEvent::KeyRelease {
+                            vk,
+                            injected: false,
+                        });
                     }
                 }
             }
         }
         KCG_EVENT_LEFT_MOUSE_DOWN => {
-            let _ = sender.try_send(HotkeyEvent::MousePress { button: MouseButton::Left });
+            let _ = sender.try_send(HotkeyEvent::MousePress {
+                button: MouseButton::Left,
+            });
         }
         KCG_EVENT_LEFT_MOUSE_UP => {
-            let _ = sender.try_send(HotkeyEvent::MouseRelease { button: MouseButton::Left });
+            let _ = sender.try_send(HotkeyEvent::MouseRelease {
+                button: MouseButton::Left,
+            });
         }
         KCG_EVENT_RIGHT_MOUSE_DOWN => {
-            let _ = sender.try_send(HotkeyEvent::MousePress { button: MouseButton::Right });
+            let _ = sender.try_send(HotkeyEvent::MousePress {
+                button: MouseButton::Right,
+            });
         }
         KCG_EVENT_RIGHT_MOUSE_UP => {
-            let _ = sender.try_send(HotkeyEvent::MouseRelease { button: MouseButton::Right });
+            let _ = sender.try_send(HotkeyEvent::MouseRelease {
+                button: MouseButton::Right,
+            });
         }
         KCG_EVENT_OTHER_MOUSE_DOWN => {
-            let btn_num = unsafe { CGEventGetIntegerValueField(event, KCG_MOUSE_EVENT_BUTTON_NUMBER) };
+            let btn_num =
+                unsafe { CGEventGetIntegerValueField(event, KCG_MOUSE_EVENT_BUTTON_NUMBER) };
             let button = match btn_num {
                 2 => MouseButton::Middle,
                 3 => MouseButton::X1,
@@ -329,7 +356,8 @@ extern "C" fn event_tap_callback(
             let _ = sender.try_send(HotkeyEvent::MousePress { button });
         }
         KCG_EVENT_OTHER_MOUSE_UP => {
-            let btn_num = unsafe { CGEventGetIntegerValueField(event, KCG_MOUSE_EVENT_BUTTON_NUMBER) };
+            let btn_num =
+                unsafe { CGEventGetIntegerValueField(event, KCG_MOUSE_EVENT_BUTTON_NUMBER) };
             let button = match btn_num {
                 2 => MouseButton::Middle,
                 3 => MouseButton::X1,
@@ -446,7 +474,9 @@ impl HotkeyListener {
             .expect("Failed to spawn event tap thread");
 
         // Wait for the tap thread to report whether the event tap was created.
-        let tap_ok = tap_result_rx.recv_timeout(Duration::from_secs(3)).unwrap_or(false);
+        let tap_ok = tap_result_rx
+            .recv_timeout(Duration::from_secs(3))
+            .unwrap_or(false);
 
         if !tap_ok {
             // Tap thread already exited; join it and return an error.

@@ -71,7 +71,8 @@ impl AudioRecorder {
             Self::find_device_by_name(&host, device_name)?
         };
 
-        let device_display = device.description()
+        let device_display = device
+            .description()
             .map(|d| d.name().to_string())
             .unwrap_or_else(|_| "unknown".into());
         log::info!("Opening audio device: {}", device_display);
@@ -80,11 +81,15 @@ impl AudioRecorder {
         // Many macOS devices (e.g. MacBook Pro Microphone) only support their
         // native sample rate (typically 48 kHz). We accept whatever the device
         // offers and resample to 16 kHz mono in the callback.
-        let (stream_config, device_rate, device_channels, sample_fmt) = Self::negotiate_config(&device)?;
+        let (stream_config, device_rate, device_channels, sample_fmt) =
+            Self::negotiate_config(&device)?;
         let need_resample = device_rate != config::AUDIO_RATE as u32;
         log::info!(
             "Audio config: {}Hz {}ch {:?} (need_resample={})",
-            device_rate, device_channels, sample_fmt, need_resample
+            device_rate,
+            device_channels,
+            sample_fmt,
+            need_resample
         );
 
         // Reset state
@@ -138,7 +143,8 @@ impl AudioRecorder {
 
                 let resampled_storage;
                 let resampled: &[i16] = if need_resample {
-                    resampled_storage = resample_linear(mono_i16, source_rate, target_rate, &resample_pos);
+                    resampled_storage =
+                        resample_linear(mono_i16, source_rate, target_rate, &resample_pos);
                     &resampled_storage
                 } else {
                     mono_i16
@@ -178,9 +184,7 @@ impl AudioRecorder {
                     // Throttled volume computation
                     let now = Instant::now();
                     let mut last = last_volume_time.lock();
-                    if now.duration_since(*last).as_millis()
-                        >= config::VOLUME_THROTTLE_MS as u128
-                    {
+                    if now.duration_since(*last).as_millis() >= config::VOLUME_THROTTLE_MS as u128 {
                         *last = now;
                         let level = compute_volume(resampled, &noise_floor);
                         let boosted = (level * vol_boost).min(1.0);
@@ -189,83 +193,84 @@ impl AudioRecorder {
                 } else {
                     // macOS / other: full InputProfile DSP chain
 
-                // Apply input profile processing: gain → highpass → noise gate
-                let processed = {
-                    let mut hp_in = hp_prev_in.lock();
-                    let mut hp_out = hp_prev_out.lock();
-                    resampled.iter().map(|&s| {
-                        // 1) Apply gain
-                        let gained = (s as f32 * gain_linear).clamp(-32767.0, 32767.0);
+                    // Apply input profile processing: gain → highpass → noise gate
+                    let processed = {
+                        let mut hp_in = hp_prev_in.lock();
+                        let mut hp_out = hp_prev_out.lock();
+                        resampled
+                            .iter()
+                            .map(|&s| {
+                                // 1) Apply gain
+                                let gained = (s as f32 * gain_linear).clamp(-32767.0, 32767.0);
 
-                        // 2) Highpass filter (1st-order IIR)
-                        let filtered = hp_alpha * (*hp_out + gained - *hp_in);
-                        *hp_in = gained;
-                        *hp_out = filtered;
+                                // 2) Highpass filter (1st-order IIR)
+                                let filtered = hp_alpha * (*hp_out + gained - *hp_in);
+                                *hp_in = gained;
+                                *hp_out = filtered;
 
-                        filtered.round() as i16
-                    }).collect::<Vec<i16>>()
-                };
-
-                // 3) Adaptive noise gate.
-                //
-                // During the warm-up period (~256 ms) we only calibrate the
-                // noise floor from the ambient room noise captured at the start
-                // of each recording. After warm-up, the threshold is set to
-                // max(profile_static_gate, noise_floor + ADAPTIVE_GATE_HEADROOM_DB)
-                // so it automatically raises in noisy environments.
-                let output = {
-                    let sum_sq: f64 = processed.iter().map(|&s| (s as f64) * (s as f64)).sum();
-                    let rms = (sum_sq / processed.len() as f64).sqrt() as f32;
-                    let db = if rms > 1.0 {
-                        20.0 * (rms / 32768.0_f32).log10()
-                    } else {
-                        -96.0_f32
+                                filtered.round() as i16
+                            })
+                            .collect::<Vec<i16>>()
                     };
 
-                    // Update EMA noise floor every chunk (not just at volume events)
-                    {
-                        let mut nf = noise_floor.lock();
-                        // Only pull floor down when signal is near current floor
-                        // (don't let loud speech drag the floor upward).
-                        if db < *nf + 3.0 {
-                            *nf = *nf * (1.0 - config::NOISE_FLOOR_ALPHA)
-                                + db * config::NOISE_FLOOR_ALPHA;
+                    // 3) Adaptive noise gate.
+                    //
+                    // During the warm-up period (~256 ms) we only calibrate the
+                    // noise floor from the ambient room noise captured at the start
+                    // of each recording. After warm-up, the threshold is set to
+                    // max(profile_static_gate, noise_floor + ADAPTIVE_GATE_HEADROOM_DB)
+                    // so it automatically raises in noisy environments.
+                    let output = {
+                        let sum_sq: f64 = processed.iter().map(|&s| (s as f64) * (s as f64)).sum();
+                        let rms = (sum_sq / processed.len() as f64).sqrt() as f32;
+                        let db = if rms > 1.0 {
+                            20.0 * (rms / 32768.0_f32).log10()
+                        } else {
+                            -96.0_f32
+                        };
+
+                        // Update EMA noise floor every chunk (not just at volume events)
+                        {
+                            let mut nf = noise_floor.lock();
+                            // Only pull floor down when signal is near current floor
+                            // (don't let loud speech drag the floor upward).
+                            if db < *nf + 3.0 {
+                                *nf = *nf * (1.0 - config::NOISE_FLOOR_ALPHA)
+                                    + db * config::NOISE_FLOOR_ALPHA;
+                            }
                         }
-                    }
 
-                    let mut count = chunk_count.lock();
-                    *count += 1;
-                    let warmed_up = *count > config::ADAPTIVE_GATE_WARM_UP_CHUNKS;
-                    drop(count);
+                        let mut count = chunk_count.lock();
+                        *count += 1;
+                        let warmed_up = *count > config::ADAPTIVE_GATE_WARM_UP_CHUNKS;
+                        drop(count);
 
-                    if warmed_up && (noise_gate_linear > 0.0 || true) {
-                        let nf_db = *noise_floor.lock();
-                        let adaptive_gate_db = nf_db + config::ADAPTIVE_GATE_HEADROOM_DB;
-                        let adaptive_gate_linear =
-                            32768.0_f32 * 10.0_f32.powf(adaptive_gate_db / 20.0);
-                        // Use the tighter (higher) of adaptive vs. profile static gate
-                        let effective_gate = adaptive_gate_linear.max(noise_gate_linear);
-                        if rms < effective_gate {
+                        if warmed_up && (noise_gate_linear > 0.0 || true) {
+                            let nf_db = *noise_floor.lock();
+                            let adaptive_gate_db = nf_db + config::ADAPTIVE_GATE_HEADROOM_DB;
+                            let adaptive_gate_linear =
+                                32768.0_f32 * 10.0_f32.powf(adaptive_gate_db / 20.0);
+                            // Use the tighter (higher) of adaptive vs. profile static gate
+                            let effective_gate = adaptive_gate_linear.max(noise_gate_linear);
+                            if rms < effective_gate {
+                                vec![0i16; processed.len()]
+                            } else {
+                                processed
+                            }
+                        } else if noise_gate_linear > 0.0 && rms < noise_gate_linear {
+                            // During warm-up, still apply the profile static gate as floor
                             vec![0i16; processed.len()]
                         } else {
                             processed
                         }
-                    } else if noise_gate_linear > 0.0 && rms < noise_gate_linear {
-                        // During warm-up, still apply the profile static gate as floor
-                        vec![0i16; processed.len()]
-                    } else {
-                        processed
-                    }
-                };
+                    };
 
                     on_raw_chunk(&output);
 
                     // Throttled volume computation
                     let now = Instant::now();
                     let mut last = last_volume_time.lock();
-                    if now.duration_since(*last).as_millis()
-                        >= config::VOLUME_THROTTLE_MS as u128
-                    {
+                    if now.duration_since(*last).as_millis() >= config::VOLUME_THROTTLE_MS as u128 {
                         *last = now;
                         let level = compute_volume(&output, &noise_floor);
                         // Apply volume display boost from profile
@@ -409,7 +414,10 @@ impl AudioRecorder {
 
             log::info!(
                 "Found input device [{}]: '{}' (interface={}, default={})",
-                idx, name, interface_type, is_default
+                idx,
+                name,
+                interface_type,
+                is_default
             );
 
             mics.push(MicInfo {
@@ -459,9 +467,15 @@ impl AudioRecorder {
             };
             log::info!(
                 "Windows: requesting {}Hz {}ch I16 directly (WASAPI shared-mode resampling)",
-                config::AUDIO_RATE, config::AUDIO_CHANNELS
+                config::AUDIO_RATE,
+                config::AUDIO_CHANNELS
             );
-            return Ok((direct_config, config::AUDIO_RATE, config::AUDIO_CHANNELS, SampleFormat::I16));
+            return Ok((
+                direct_config,
+                config::AUDIO_RATE,
+                config::AUDIO_CHANNELS,
+                SampleFormat::I16,
+            ));
         }
 
         // Non-Windows: negotiate the best supported config
@@ -500,7 +514,10 @@ impl AudioRecorder {
 
             log::info!(
                 "Using device default config: {}Hz {}ch {:?} (will resample to {}Hz mono)",
-                rate, channels, fmt, config::AUDIO_RATE
+                rate,
+                channels,
+                fmt,
+                config::AUDIO_RATE
             );
             Ok((stream_config, rate, channels, fmt))
         }
@@ -581,7 +598,11 @@ fn resample_linear(
         let idx = current_pos as usize;
         let frac = current_pos - idx as f64;
         let a = input[idx] as f64;
-        let b = if idx + 1 < input.len() { input[idx + 1] as f64 } else { a };
+        let b = if idx + 1 < input.len() {
+            input[idx + 1] as f64
+        } else {
+            a
+        };
         let sample = a + (b - a) * frac;
         out.push(sample.round() as i16);
         current_pos += ratio;

@@ -153,10 +153,10 @@ pub const PROFILE_HEADSET: InputProfile = InputProfile {
 
 /// Laptop mic: far from mouth, low SNR, needs significant boost and filtering.
 pub const PROFILE_LAPTOP: InputProfile = InputProfile {
-    input_gain_db: 18.0,    // +18 dB to compensate for distance
-    noise_gate_dbfs: -45.0,  // reject fan/ambient noise
+    input_gain_db: 18.0,        // +18 dB to compensate for distance
+    noise_gate_dbfs: -45.0,     // reject fan/ambient noise
     pre_vad_highpass_hz: 200.0, // reject case rumble, fan hum
-    vad_threshold: 0.35,     // more sensitive due to lower levels
+    vad_threshold: 0.35,        // more sensitive due to lower levels
     volume_display_boost: 2.5,
 };
 

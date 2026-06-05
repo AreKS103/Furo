@@ -82,7 +82,9 @@ const MOUSE_TRIGGERS: &[&str] = &["mouse1", "mouse2", "mouse3", "mouse4", "mouse
 /// Parse a hotkey string like "ctrl+space" or "cmd+f9" into modifiers + trigger.
 pub fn parse_hotkey_combo(hotkey_str: &str) -> HotkeyCombo {
     let parts: Vec<&str> = hotkey_str.split('+').map(|s| s.trim()).collect();
-    let modifier_names: HashSet<&str> = ["ctrl", "alt", "shift", "win", "cmd", "option"].into_iter().collect();
+    let modifier_names: HashSet<&str> = ["ctrl", "alt", "shift", "win", "cmd", "option"]
+        .into_iter()
+        .collect();
 
     let mut modifiers = HashSet::new();
     let last = parts.last().map(|s| s.to_lowercase()).unwrap_or_default();
@@ -333,7 +335,8 @@ pub(super) fn hotkey_worker(
 
     log::info!(
         "Hotkey worker running -- hold: {:?}, hands-free: {:?}",
-        hold_combo, handsfree_combo
+        hold_combo,
+        handsfree_combo
     );
 
     while !stop_flag.load(Ordering::Relaxed) {
@@ -347,7 +350,8 @@ pub(super) fn hotkey_worker(
                 log::info!(
                     "[rebind] clearing stale state on activation — \
                      pressed_keys={:?}, active_modifiers={:?}",
-                    pressed_keys, active_modifiers
+                    pressed_keys,
+                    active_modifiers
                 );
             }
             pressed_keys.clear();
@@ -361,11 +365,12 @@ pub(super) fn hotkey_worker(
         }
         was_rebind_active = rebind_active;
 
-        let event = match receiver.recv_timeout(std::time::Duration::from_millis(WORKER_IDLE_POLL_MS)) {
-            Ok(e) => e,
-            Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
-            Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
-        };
+        let event =
+            match receiver.recv_timeout(std::time::Duration::from_millis(WORKER_IDLE_POLL_MS)) {
+                Ok(e) => e,
+                Err(crossbeam_channel::RecvTimeoutError::Timeout) => continue,
+                Err(crossbeam_channel::RecvTimeoutError::Disconnected) => break,
+            };
 
         // ── Re-check rebind state immediately after waking from recv_timeout ──
         // The cached `rebind_active` above was captured BEFORE the 500ms sleep.
@@ -383,7 +388,8 @@ pub(super) fn hotkey_worker(
                 log::info!(
                     "[rebind] clearing stale state (mid-event detection) — \
                      pressed_keys={:?}, active_modifiers={:?}",
-                    pressed_keys, active_modifiers
+                    pressed_keys,
+                    active_modifiers
                 );
             }
             pressed_keys.clear();
@@ -409,7 +415,8 @@ pub(super) fn hotkey_worker(
                     if rebind_active {
                         log::debug!(
                             "[rebind] suppressed auto-repeat for vk=0x{:02X} ({})",
-                            vk, vk_to_combo_part(vk)
+                            vk,
+                            vk_to_combo_part(vk)
                         );
                     }
                     continue;
@@ -488,7 +495,9 @@ pub(super) fn hotkey_worker(
                     rebind_pressed.remove(&vk);
                     log::info!(
                         "[rebind] key up: {} (0x{:02X}) — remaining={:?}",
-                        vk_to_combo_part(vk), vk, rebind_pressed
+                        vk_to_combo_part(vk),
+                        vk,
+                        rebind_pressed
                     );
                     if rebind_pressed.is_empty() {
                         // Determine the trigger key. If the user pressed a
@@ -502,7 +511,8 @@ pub(super) fn hotkey_worker(
                                 rebind_modifiers.remove(&last_mod);
                                 log::info!(
                                     "[rebind] modifier-only combo — using {} (0x{:02X}) as trigger",
-                                    vk_to_combo_part(last_mod), last_mod
+                                    vk_to_combo_part(last_mod),
+                                    last_mod
                                 );
                                 Some(last_mod)
                             } else {

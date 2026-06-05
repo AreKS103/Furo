@@ -7,19 +7,19 @@ use std::time::Duration;
 use super::CapturedTarget;
 
 use windows::Win32::Foundation::{BOOL, HMODULE, HWND};
-use windows::Win32::System::Threading::{AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId};
-use windows::Win32::UI::Accessibility::{
-    SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK,
+use windows::Win32::System::Threading::{
+    AttachThreadInput, GetCurrentProcessId, GetCurrentThreadId,
 };
+use windows::Win32::UI::Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
-    SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, VIRTUAL_KEY,
-    KEYEVENTF_UNICODE, VK_CONTROL, VK_V,
+    SendInput, SetFocus, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP,
+    KEYEVENTF_UNICODE, VIRTUAL_KEY, VK_CONTROL, VK_V,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AllowSetForegroundWindow, BringWindowToTop, GetForegroundWindow, GetMessageW,
-    GetGUIThreadInfo, GetWindowThreadProcessId, IsIconic, IsWindow, SetForegroundWindow,
-    ShowWindow, ASFW_ANY, GUITHREADINFO, MSG, SW_RESTORE,
-    EVENT_SYSTEM_FOREGROUND, WINEVENT_OUTOFCONTEXT, WINEVENT_SKIPOWNPROCESS,
+    AllowSetForegroundWindow, BringWindowToTop, GetForegroundWindow, GetGUIThreadInfo, GetMessageW,
+    GetWindowThreadProcessId, IsIconic, IsWindow, SetForegroundWindow, ShowWindow, ASFW_ANY,
+    EVENT_SYSTEM_FOREGROUND, GUITHREADINFO, MSG, SW_RESTORE, WINEVENT_OUTOFCONTEXT,
+    WINEVENT_SKIPOWNPROCESS,
 };
 
 use crate::config;
@@ -40,8 +40,13 @@ static LAST_EXT_HWND: AtomicIsize = AtomicIsize::new(0);
 /// WinEvent callback: called (out-of-context, in our message-pump thread)
 /// whenever the foreground window changes on the desktop.
 unsafe extern "system" fn on_foreground_changed(
-    _: HWINEVENTHOOK, _: u32, hwnd: HWND,
-    _: i32, _: i32, _: u32, _: u32,
+    _: HWINEVENTHOOK,
+    _: u32,
+    hwnd: HWND,
+    _: i32,
+    _: i32,
+    _: u32,
+    _: u32,
 ) {
     if hwnd.0.is_null() {
         return;
@@ -81,7 +86,8 @@ pub fn start_focus_tracker() {
                 EVENT_SYSTEM_FOREGROUND,
                 HMODULE(std::ptr::null_mut()),
                 Some(on_foreground_changed),
-                0, 0,
+                0,
+                0,
                 WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
             );
             log::info!("Focus tracker installed (own pid={}).", own);
@@ -124,7 +130,9 @@ pub fn capture_target() -> Option<CapturedTarget> {
                 fg
             }
         } else {
-            if fg.0.is_null() { return None; }
+            if fg.0.is_null() {
+                return None;
+            }
             fg
         };
 
@@ -234,10 +242,10 @@ fn send_unicode_text(text: &str, target_hwnd: isize) -> bool {
 /// Simulate physical Ctrl+V via SendInput (hardware-level).
 fn send_ctrl_v() {
     let inputs = [
-        make_key_input(VK_CONTROL, 0),                          // Ctrl down
-        make_key_input(VK_V, 0),                                // V down
-        make_key_input(VK_V, KEYEVENTF_KEYUP.0),               // V up
-        make_key_input(VK_CONTROL, KEYEVENTF_KEYUP.0),         // Ctrl up
+        make_key_input(VK_CONTROL, 0),                 // Ctrl down
+        make_key_input(VK_V, 0),                       // V down
+        make_key_input(VK_V, KEYEVENTF_KEYUP.0),       // V up
+        make_key_input(VK_CONTROL, KEYEVENTF_KEYUP.0), // Ctrl up
     ];
 
     unsafe {
@@ -259,7 +267,11 @@ fn set_clipboard_text(text: &str) -> bool {
         match arboard::Clipboard::new() {
             Ok(mut clipboard) => {
                 if let Err(e) = clipboard.set_text(text) {
-                    log::warn!("Clipboard set_text failed on attempt {}: {}", attempt + 1, e);
+                    log::warn!(
+                        "Clipboard set_text failed on attempt {}: {}",
+                        attempt + 1,
+                        e
+                    );
                 } else if read_clipboard_text().as_deref() == Some(text) {
                     return true;
                 } else {
@@ -298,7 +310,9 @@ fn schedule_clipboard_restore(expected: String, previous: Option<String>) {
         .name("furo-clipboard-restore".into())
         .spawn(move || {
             thread::sleep(Duration::from_millis(CLIPBOARD_RESTORE_DELAY_MS));
-            let _clipboard_guard = CLIPBOARD_INJECTION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let _clipboard_guard = CLIPBOARD_INJECTION_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             restore_clipboard_if_unchanged(&expected, previous);
         });
 }
@@ -450,7 +464,9 @@ pub fn type_text(text: &str, target: &CapturedTarget) -> bool {
         return true;
     }
 
-    let _clipboard_guard = CLIPBOARD_INJECTION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _clipboard_guard = CLIPBOARD_INJECTION_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     if !target_is_foreground(target.parent) {
         log::warn!("Target changed before clipboard fallback — aborting paste.");
         return false;

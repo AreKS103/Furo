@@ -80,10 +80,7 @@ mod ort_impl {
         }
 
         pub fn is_speech(&mut self, chunk_i16: &[i16]) -> bool {
-            let chunk_f32: Vec<f32> = chunk_i16
-                .iter()
-                .map(|&s| s as f32 / 32768.0)
-                .collect();
+            let chunk_f32: Vec<f32> = chunk_i16.iter().map(|&s| s as f32 / 32768.0).collect();
 
             let mut input_data = Vec::with_capacity(self.context.len() + chunk_f32.len());
             input_data.extend_from_slice(&self.context);
@@ -91,19 +88,21 @@ mod ort_impl {
 
             let total = input_data.len();
             self.context.clear();
-            self.context.extend_from_slice(&input_data[total.saturating_sub(64)..]);
+            self.context
+                .extend_from_slice(&input_data[total.saturating_sub(64)..]);
 
             let input_len = input_data.len();
             let sr_data = vec![self.sample_rate];
             let state_data = self.state.clone();
 
-            let input_tensor = match Tensor::from_array(([1usize, input_len], input_data.into_boxed_slice())) {
-                Ok(t) => t,
-                Err(e) => {
-                    log::warn!("Failed to create input tensor: {}", e);
-                    return false;
-                }
-            };
+            let input_tensor =
+                match Tensor::from_array(([1usize, input_len], input_data.into_boxed_slice())) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        log::warn!("Failed to create input tensor: {}", e);
+                        return false;
+                    }
+                };
             let sr_tensor = match Tensor::from_array(([1usize], sr_data.into_boxed_slice())) {
                 Ok(t) => t,
                 Err(e) => {
@@ -111,21 +110,20 @@ mod ort_impl {
                     return false;
                 }
             };
-            let state_tensor = match Tensor::from_array(([2usize, 1, 128], state_data.into_boxed_slice())) {
-                Ok(t) => t,
-                Err(e) => {
-                    log::warn!("Failed to create state tensor: {}", e);
-                    return false;
-                }
-            };
+            let state_tensor =
+                match Tensor::from_array(([2usize, 1, 128], state_data.into_boxed_slice())) {
+                    Ok(t) => t,
+                    Err(e) => {
+                        log::warn!("Failed to create state tensor: {}", e);
+                        return false;
+                    }
+                };
 
-            let result = match self.session.run(
-                ort::inputs![
-                    "input" => input_tensor,
-                    "state" => state_tensor,
-                    "sr" => sr_tensor,
-                ],
-            ) {
+            let result = match self.session.run(ort::inputs![
+                "input" => input_tensor,
+                "state" => state_tensor,
+                "sr" => sr_tensor,
+            ]) {
                 Ok(r) => r,
                 Err(e) => {
                     log::warn!("VAD inference failed: {}", e);
@@ -160,7 +158,10 @@ mod ort_impl {
             std::fs::create_dir_all(models_dir)
                 .map_err(|e| format!("Failed to create models directory: {}", e))?;
 
-            log::info!("Downloading Silero VAD model from {}...", config::VAD_MODEL_URL);
+            log::info!(
+                "Downloading Silero VAD model from {}...",
+                config::VAD_MODEL_URL
+            );
 
             let response = reqwest::blocking::get(config::VAD_MODEL_URL)
                 .map_err(|e| format!("Failed to download VAD model: {}", e))?;

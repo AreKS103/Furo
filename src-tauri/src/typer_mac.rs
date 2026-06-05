@@ -16,8 +16,8 @@ use std::time::Duration;
 use objc::runtime::Object;
 use objc::{class, msg_send, sel, sel_impl};
 
-use crate::config;
 use super::CapturedTarget;
+use crate::config;
 
 static CLIPBOARD_INJECTION_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 const CLIPBOARD_VERIFY_RETRIES: usize = 5;
@@ -79,8 +79,7 @@ pub fn start_focus_tracker() {
                 thread::sleep(Duration::from_millis(100));
                 let _ = std::panic::catch_unwind(|| unsafe {
                     let pool: *mut Object = msg_send![class!(NSAutoreleasePool), new];
-                    let workspace: *mut Object =
-                        msg_send![class!(NSWorkspace), sharedWorkspace];
+                    let workspace: *mut Object = msg_send![class!(NSWorkspace), sharedWorkspace];
                     let app: *mut Object = msg_send![workspace, frontmostApplication];
                     if !app.is_null() {
                         let pid: i32 = msg_send![app, processIdentifier];
@@ -226,7 +225,13 @@ fn read_clipboard_text() -> Option<String> {
     std::process::Command::new("pbpaste")
         .output()
         .ok()
-        .and_then(|o| if o.status.success() { String::from_utf8(o.stdout).ok() } else { None })
+        .and_then(|o| {
+            if o.status.success() {
+                String::from_utf8(o.stdout).ok()
+            } else {
+                None
+            }
+        })
 }
 
 fn write_clipboard_text(text: &str) -> bool {
@@ -239,7 +244,11 @@ fn write_clipboard_text(text: &str) -> bool {
         {
             Ok(c) => c,
             Err(e) => {
-                log::warn!("[typer] pbcopy spawn failed on attempt {}: {}", attempt + 1, e);
+                log::warn!(
+                    "[typer] pbcopy spawn failed on attempt {}: {}",
+                    attempt + 1,
+                    e
+                );
                 thread::sleep(Duration::from_millis(CLIPBOARD_VERIFY_DELAY_MS));
                 continue;
             }
@@ -247,7 +256,11 @@ fn write_clipboard_text(text: &str) -> bool {
 
         if let Some(ref mut stdin) = child.stdin {
             if let Err(e) = stdin.write_all(text.as_bytes()) {
-                log::warn!("[typer] pbcopy write failed on attempt {}: {}", attempt + 1, e);
+                log::warn!(
+                    "[typer] pbcopy write failed on attempt {}: {}",
+                    attempt + 1,
+                    e
+                );
             }
         }
 
@@ -256,10 +269,18 @@ fn write_clipboard_text(text: &str) -> bool {
                 return true;
             }
             Ok(status) => {
-                log::warn!("[typer] pbcopy verification failed on attempt {}: {}", attempt + 1, status);
+                log::warn!(
+                    "[typer] pbcopy verification failed on attempt {}: {}",
+                    attempt + 1,
+                    status
+                );
             }
             Err(e) => {
-                log::warn!("[typer] pbcopy wait failed on attempt {}: {}", attempt + 1, e);
+                log::warn!(
+                    "[typer] pbcopy wait failed on attempt {}: {}",
+                    attempt + 1,
+                    e
+                );
             }
         }
 
@@ -286,7 +307,9 @@ fn schedule_clipboard_restore(expected: String, previous: Option<String>) {
         .name("furo-clipboard-restore".into())
         .spawn(move || {
             thread::sleep(Duration::from_millis(CLIPBOARD_RESTORE_DELAY_MS));
-            let _clipboard_guard = CLIPBOARD_INJECTION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+            let _clipboard_guard = CLIPBOARD_INJECTION_LOCK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             restore_clipboard_if_unchanged(&expected, previous);
         });
 }
@@ -330,12 +353,18 @@ pub fn type_text(text: &str, target: &CapturedTarget) -> bool {
     let target_pid = target.parent as i32;
     let pid_alive = unsafe { libc::kill(target_pid, 0) } == 0;
     if !pid_alive {
-        log::warn!("[typer] pid {} no longer running (ESRCH), aborting", target_pid);
+        log::warn!(
+            "[typer] pid {} no longer running (ESRCH), aborting",
+            target_pid
+        );
         return false;
     }
 
     if frontmost_pid() != Some(target_pid) {
-        log::warn!("[typer] target pid {} is no longer frontmost; aborting", target_pid);
+        log::warn!(
+            "[typer] target pid {} is no longer frontmost; aborting",
+            target_pid
+        );
         return false;
     }
 
@@ -350,6 +379,8 @@ pub fn type_text(text: &str, target: &CapturedTarget) -> bool {
         return true;
     }
 
-    let _clipboard_guard = CLIPBOARD_INJECTION_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    let _clipboard_guard = CLIPBOARD_INJECTION_LOCK
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
     type_text_via_clipboard(&output)
 }

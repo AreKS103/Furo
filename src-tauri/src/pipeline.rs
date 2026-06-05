@@ -12,9 +12,9 @@ use tauri::{AppHandle, Emitter};
 
 use crate::audio::{AudioRecorder, MicInfo};
 use crate::config;
-use crate::hotkey::{HotkeyCallbacks, HotkeyListener, REBIND_MODE_ACTIVE};
 #[cfg(target_os = "windows")]
 use crate::hotkey::WIN_IS_COMBO_MODIFIER;
+use crate::hotkey::{HotkeyCallbacks, HotkeyListener, REBIND_MODE_ACTIVE};
 use crate::processor;
 use crate::settings::SettingsStore;
 use crate::sidecar::SidecarManager;
@@ -53,8 +53,8 @@ fn play_widget_sound(volume: f32) {
 ///   4. Open a cpal output stream, drain all samples, then close cleanly.
 fn play_wav_on_output(wav: &'static [u8], volume: f32) -> Result<(), String> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::Arc;
 
     // ── 1. Parse WAV ─────────────────────────────────────────────────────────
     if wav.len() < 44 || &wav[0..4] != b"RIFF" || &wav[8..12] != b"WAVE" {
@@ -64,20 +64,29 @@ fn play_wav_on_output(wav: &'static [u8], volume: f32) -> Result<(), String> {
         return Err("fmt chunk not at expected offset 12".into());
     }
     let audio_fmt = u16::from_le_bytes([wav[20], wav[21]]);
-    let wav_ch    = u16::from_le_bytes([wav[22], wav[23]]) as usize;
-    let wav_rate  = u32::from_le_bytes([wav[24], wav[25], wav[26], wav[27]]);
-    let bits      = u16::from_le_bytes([wav[34], wav[35]]);
-    if audio_fmt != 1 { return Err(format!("non-PCM WAV (audio_format={})", audio_fmt)); }
-    if bits != 16      { return Err(format!("need 16-bit PCM, got {} bits", bits)); }
+    let wav_ch = u16::from_le_bytes([wav[22], wav[23]]) as usize;
+    let wav_rate = u32::from_le_bytes([wav[24], wav[25], wav[26], wav[27]]);
+    let bits = u16::from_le_bytes([wav[34], wav[35]]);
+    if audio_fmt != 1 {
+        return Err(format!("non-PCM WAV (audio_format={})", audio_fmt));
+    }
+    if bits != 16 {
+        return Err(format!("need 16-bit PCM, got {} bits", bits));
+    }
 
     // Locate the "data" chunk (may follow extra metadata chunks after fmt).
     let fmt_size = u32::from_le_bytes([wav[16], wav[17], wav[18], wav[19]]) as usize;
-    let mut off  = 12 + 8 + fmt_size;
+    let mut off = 12 + 8 + fmt_size;
     let (data_off, data_sz) = loop {
-        if off + 8 > wav.len() { return Err("data chunk not found".into()); }
+        if off + 8 > wav.len() {
+            return Err("data chunk not found".into());
+        }
         let id = &wav[off..off + 4];
-        let sz = u32::from_le_bytes([wav[off+4], wav[off+5], wav[off+6], wav[off+7]]) as usize;
-        if id == b"data" { break (off + 8, sz); }
+        let sz =
+            u32::from_le_bytes([wav[off + 4], wav[off + 5], wav[off + 6], wav[off + 7]]) as usize;
+        if id == b"data" {
+            break (off + 8, sz);
+        }
         off += 8 + sz;
     };
 
@@ -89,10 +98,12 @@ fn play_wav_on_output(wav: &'static [u8], volume: f32) -> Result<(), String> {
         .collect();
 
     // ── 2. Open output device ─────────────────────────────────────────────────
-    let host   = cpal::default_host();
-    let device = host.default_output_device().ok_or("no default output device")?;
-    let cfg    = device.default_output_config().map_err(|e| e.to_string())?;
-    let dev_ch   = cfg.channels() as usize;
+    let host = cpal::default_host();
+    let device = host
+        .default_output_device()
+        .ok_or("no default output device")?;
+    let cfg = device.default_output_config().map_err(|e| e.to_string())?;
+    let dev_ch = cfg.channels() as usize;
     let dev_rate = cfg.sample_rate();
 
     // ── 3. Resample / remix to device native layout, then attenuate ──────────
@@ -101,15 +112,20 @@ fn play_wav_on_output(wav: &'static [u8], volume: f32) -> Result<(), String> {
     } else {
         wav_resample_remix(&wav_f32, wav_ch, wav_rate, dev_ch, dev_rate)
     };
-    let samples: Arc<Vec<f32>> = Arc::new(resampled.into_iter().map(|s| s * volume.clamp(0.0, 1.0)).collect());
+    let samples: Arc<Vec<f32>> = Arc::new(
+        resampled
+            .into_iter()
+            .map(|s| s * volume.clamp(0.0, 1.0))
+            .collect(),
+    );
 
     // ── 4. Build f32 output stream and play ───────────────────────────────────
     let stream_cfg = cpal::StreamConfig {
-        channels:    dev_ch as cpal::ChannelCount,
+        channels: dev_ch as cpal::ChannelCount,
         sample_rate: dev_rate,
         buffer_size: cpal::BufferSize::Default,
     };
-    let pos  = Arc::new(AtomicUsize::new(0));
+    let pos = Arc::new(AtomicUsize::new(0));
     let done = Arc::new(AtomicBool::new(false));
     let (pos_w, done_w, smp_w) = (Arc::clone(&pos), Arc::clone(&done), Arc::clone(&samples));
 
@@ -158,11 +174,11 @@ fn wav_resample_remix(
     let mut out = Vec::with_capacity(dst_frames * dst_ch);
     let safe_src_ch = src_ch.max(1);
     for i in 0..dst_frames {
-        let pos  = i as f64 * src_rate as f64 / dst_rate as f64;
-        let idx  = pos as usize;
+        let pos = i as f64 * src_rate as f64 / dst_rate as f64;
+        let idx = pos as usize;
         let frac = (pos - idx as f64) as f32;
         let next = (idx + 1).min(src_frames.saturating_sub(1));
-        let mix  = |frame: usize| -> f32 {
+        let mix = |frame: usize| -> f32 {
             (0..safe_src_ch)
                 .map(|c| src[(frame * safe_src_ch + c).min(src.len().saturating_sub(1))])
                 .sum::<f32>()
@@ -279,7 +295,9 @@ impl FuroPipeline {
     }
 
     pub fn emit_volume(&self, level: f64) {
-        let _ = self.app_handle.emit("furo://volume", VolumePayload { level });
+        let _ = self
+            .app_handle
+            .emit("furo://volume", VolumePayload { level });
     }
 
     pub fn emit_transcription(&self, text: &str) {
@@ -327,7 +345,11 @@ impl FuroPipeline {
 
     /// Load VAD, spawn sidecar servers, create HTTP clients. Call from a background thread.
     pub fn load_models(self: &Arc<Self>) {
-        log::info!("[pipeline] load_models() starting — OS={} ARCH={}", std::env::consts::OS, std::env::consts::ARCH);
+        log::info!(
+            "[pipeline] load_models() starting — OS={} ARCH={}",
+            std::env::consts::OS,
+            std::env::consts::ARCH
+        );
         if let Ok(exe) = std::env::current_exe() {
             log::info!("[pipeline] exe path: {}", exe.display());
         }
@@ -374,7 +396,10 @@ impl FuroPipeline {
                 log::info!("[pipeline] using user-selected model: {}", p.display());
                 Some(p)
             } else {
-                log::warn!("[pipeline] user-selected model not found: {} — falling back to default", user_model);
+                log::warn!(
+                    "[pipeline] user-selected model not found: {} — falling back to default",
+                    user_model
+                );
                 None
             }
         } else {
@@ -385,12 +410,9 @@ impl FuroPipeline {
             p
         } else {
             let pipeline_whisper = Arc::clone(self);
-            match Transcriber::ensure_model_downloaded(
-                &self.models_dir,
-                move |pct, msg| {
-                    pipeline_whisper.emit_download_progress(pct, msg);
-                },
-            ) {
+            match Transcriber::ensure_model_downloaded(&self.models_dir, move |pct, msg| {
+                pipeline_whisper.emit_download_progress(pct, msg);
+            }) {
                 Ok(p) => p,
                 Err(e) => {
                     log::error!("Failed to download Whisper model: {}", e);
@@ -433,7 +455,10 @@ impl FuroPipeline {
             ) {
                 log::error!("{}", e);
                 // Surface crash details in both the status bar AND error event
-                self.emit_status("loading", &format!("Server failed: {}", e.chars().take(120).collect::<String>()));
+                self.emit_status(
+                    "loading",
+                    &format!("Server failed: {}", e.chars().take(120).collect::<String>()),
+                );
                 self.emit_error(&e);
                 return;
             }
@@ -463,7 +488,11 @@ impl FuroPipeline {
             "ready",
             &format!("Hold: {} · Hands-free: {}", hold_hk, hf_hk),
         );
-        log::info!("All models loaded. Hold: {} | Hands-free: {}", hold_hk, hf_hk);
+        log::info!(
+            "All models loaded. Hold: {} | Hands-free: {}",
+            hold_hk,
+            hf_hk
+        );
     }
 
     // ── Hotkey listener management ───────────────────────────────
@@ -478,7 +507,9 @@ impl FuroPipeline {
         // hook can suppress Win→Start-menu while a Win-key combo is in use.
         #[cfg(target_os = "windows")]
         {
-            let win_in_hold = hold_str.split('+').any(|p| matches!(p.trim(), "win" | "cmd"));
+            let win_in_hold = hold_str
+                .split('+')
+                .any(|p| matches!(p.trim(), "win" | "cmd"));
             let win_in_hf = hf_str.split('+').any(|p| matches!(p.trim(), "win" | "cmd"));
             WIN_IS_COMBO_MODIFIER.store(win_in_hold || win_in_hf, Ordering::SeqCst);
         }
@@ -534,8 +565,14 @@ impl FuroPipeline {
         drop(mode);
         {
             let enabled = self.settings.get("sound_enabled") != "false";
-            let vol = self.settings.get("sound_volume").parse::<f32>().unwrap_or(0.05);
-            if enabled { play_widget_sound(vol); }
+            let vol = self
+                .settings
+                .get("sound_volume")
+                .parse::<f32>()
+                .unwrap_or(0.05);
+            if enabled {
+                play_widget_sound(vol);
+            }
         }
         log::info!("Hold recording started.");
         self.start_recording("Listening…");
@@ -563,16 +600,28 @@ impl FuroPipeline {
             *mode = RecordingMode::Processing;
             drop(mode);
             let enabled = self.settings.get("sound_enabled") != "false";
-            let vol = self.settings.get("sound_volume").parse::<f32>().unwrap_or(0.05);
-            if enabled { play_widget_sound(vol); }
+            let vol = self
+                .settings
+                .get("sound_volume")
+                .parse::<f32>()
+                .unwrap_or(0.05);
+            if enabled {
+                play_widget_sound(vol);
+            }
             log::info!("Hands-free stopped — processing.");
             self.stop_and_process();
         } else if *mode == RecordingMode::None {
             *mode = RecordingMode::Handsfree;
             drop(mode);
             let enabled = self.settings.get("sound_enabled") != "false";
-            let vol = self.settings.get("sound_volume").parse::<f32>().unwrap_or(0.05);
-            if enabled { play_widget_sound(vol); }
+            let vol = self
+                .settings
+                .get("sound_volume")
+                .parse::<f32>()
+                .unwrap_or(0.05);
+            if enabled {
+                play_widget_sound(vol);
+            }
             log::info!("Hands-free recording started.");
             self.start_recording("Hands-free…");
         } else {
@@ -743,7 +792,11 @@ impl FuroPipeline {
         };
 
         let speech_s = audio_i16.len() as f64 / config::AUDIO_RATE as f64;
-        log::info!("[perf] buffer flatten: {:.1}ms, {:.1}s speech", t0.elapsed().as_secs_f64() * 1000.0, speech_s);
+        log::info!(
+            "[perf] buffer flatten: {:.1}ms, {:.1}s speech",
+            t0.elapsed().as_secs_f64() * 1000.0,
+            speech_s
+        );
 
         // Transcribe
         let language = self.settings.get("language");
@@ -785,9 +838,9 @@ impl FuroPipeline {
                 // becomes a Rust panic. We catch it here so the pipeline thread
                 // stays alive and the user sees a friendly error instead of a
                 // fatal crash.
-                let success = std::panic::catch_unwind(
-                    std::panic::AssertUnwindSafe(|| typer::type_text(&text, target)),
-                )
+                let success = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    typer::type_text(&text, target)
+                }))
                 .unwrap_or_else(|_| {
                     log::error!(
                         "[pipeline] panic in type_text (likely ObjC exception \
@@ -836,7 +889,11 @@ impl FuroPipeline {
     /// Preview the widget sound at the currently saved volume (called from Settings).
     pub fn preview_sound(&self) {
         let enabled = self.settings.get("sound_enabled") != "false";
-        let vol = self.settings.get("sound_volume").parse::<f32>().unwrap_or(0.05);
+        let vol = self
+            .settings
+            .get("sound_volume")
+            .parse::<f32>()
+            .unwrap_or(0.05);
         if enabled {
             play_widget_sound(vol);
         }
@@ -850,9 +907,9 @@ impl FuroPipeline {
         std::thread::spawn(move || {
             if let Some(ref target) = captured {
                 std::thread::sleep(std::time::Duration::from_millis(80));
-                let _ = std::panic::catch_unwind(
-                    std::panic::AssertUnwindSafe(|| typer::type_text(&text, target)),
-                );
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    typer::type_text(&text, target)
+                }));
             }
         });
     }

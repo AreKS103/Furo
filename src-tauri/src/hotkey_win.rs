@@ -7,17 +7,13 @@ use std::thread;
 use windows::Win32::Foundation::{HINSTANCE, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetMessageW, PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx,
-    HHOOK, KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSLLHOOKSTRUCT, MSG, WH_KEYBOARD_LL, WH_MOUSE_LL,
-    WM_KEYDOWN, WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MBUTTONDOWN, WM_MBUTTONUP, WM_QUIT, WM_RBUTTONDOWN, WM_RBUTTONUP,
-    WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP,
-    XBUTTON1,
+    CallNextHookEx, GetMessageW, PostThreadMessageW, SetWindowsHookExW, UnhookWindowsHookEx, HHOOK,
+    KBDLLHOOKSTRUCT, LLKHF_INJECTED, MSG, MSLLHOOKSTRUCT, WH_KEYBOARD_LL, WH_MOUSE_LL, WM_KEYDOWN,
+    WM_KEYUP, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_QUIT, WM_RBUTTONDOWN,
+    WM_RBUTTONUP, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_XBUTTONDOWN, WM_XBUTTONUP, XBUTTON1,
 };
 
-use super::{
-    hotkey_worker, parse_hotkey_combo, HotkeyCallbacks, HotkeyEvent, MouseButton,
-};
+use super::{hotkey_worker, parse_hotkey_combo, HotkeyCallbacks, HotkeyEvent, MouseButton};
 
 // ── Hook listener
 
@@ -76,15 +72,18 @@ unsafe extern "system" fn keyboard_hook_proc(
             //   • Win is part of a registered combo — prevents language switcher on use
             const VK_LWIN: u32 = 0x5B;
             const VK_RWIN: u32 = 0x5C;
-            if (vk == VK_LWIN || vk == VK_RWIN)
-                && super::REBIND_MODE_ACTIVE.load(Ordering::Acquire)
+            if (vk == VK_LWIN || vk == VK_RWIN) && super::REBIND_MODE_ACTIVE.load(Ordering::Acquire)
             {
                 return LRESULT(1); // consumed — OS never sees this keystroke
             }
         }
     }
 
-    let hook = KB_HOOK.lock().unwrap().map(|h| h.0).unwrap_or(HHOOK::default());
+    let hook = KB_HOOK
+        .lock()
+        .unwrap()
+        .map(|h| h.0)
+        .unwrap_or(HHOOK::default());
     CallNextHookEx(hook, n_code, w_param, l_param)
 }
 
@@ -147,7 +146,11 @@ unsafe extern "system" fn mouse_hook_proc(
         }
     }
 
-    let hook = MOUSE_HOOK.lock().unwrap().map(|h| h.0).unwrap_or(HHOOK::default());
+    let hook = MOUSE_HOOK
+        .lock()
+        .unwrap()
+        .map(|h| h.0)
+        .unwrap_or(HHOOK::default());
     CallNextHookEx(hook, n_code, w_param, l_param)
 }
 
@@ -262,4 +265,3 @@ impl Drop for HotkeyListener {
 fn GetCurrentThreadId_compat() -> u32 {
     unsafe { windows::Win32::System::Threading::GetCurrentThreadId() }
 }
-

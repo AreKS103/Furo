@@ -32,13 +32,21 @@ const GGUF_MAGIC: &[u8] = b"GGUF"; // newer GGUF format
 /// Return true if the file starts with a known GGML/GGUF magic signature
 /// and is large enough to be a real model (≥ 10 MB).
 fn is_valid_whisper_model(path: &std::path::Path) -> bool {
-    let Ok(meta) = path.metadata() else { return false };
-    if meta.len() < 10 * 1024 * 1024 { return false; } // < 10 MB → skip
+    let Ok(meta) = path.metadata() else {
+        return false;
+    };
+    if meta.len() < 10 * 1024 * 1024 {
+        return false;
+    } // < 10 MB → skip
 
     use std::io::Read;
-    let Ok(mut f) = std::fs::File::open(path) else { return false };
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
     let mut magic = [0u8; 4];
-    if f.read_exact(&mut magic).is_err() { return false; }
+    if f.read_exact(&mut magic).is_err() {
+        return false;
+    }
 
     // Compare in little-endian: the u32 0x67676d6c is stored as bytes [6c 6d 67 67]
     // but File::read gives us the actual bytes on disk.
@@ -55,20 +63,34 @@ fn is_valid_whisper_model(path: &std::path::Path) -> bool {
 /// Collect .bin files from a directory that look like GGML Whisper models.
 /// Only scans one level deep to avoid slow traversal.
 fn scan_dir_for_models(dir: &std::path::Path, out: &mut Vec<FoundModel>) {
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("bin") { continue; }
-        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("").to_lowercase();
+        if path.extension().and_then(|e| e.to_str()) != Some("bin") {
+            continue;
+        }
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("")
+            .to_lowercase();
         // Accept any file named ggml-* or whisper-*, or validate magic bytes
         let looks_like_whisper = name.starts_with("ggml-") || name.starts_with("whisper-");
-        if !looks_like_whisper && !is_valid_whisper_model(&path) { continue; }
+        if !looks_like_whisper && !is_valid_whisper_model(&path) {
+            continue;
+        }
         if let Ok(meta) = path.metadata() {
-            if meta.len() < 10 * 1024 * 1024 { continue; }
+            if meta.len() < 10 * 1024 * 1024 {
+                continue;
+            }
             let size_mb = meta.len() as f64 / 1_048_576.0;
             let label = format!(
                 "{} ({:.0} MB)",
-                path.file_name().and_then(|n| n.to_str()).unwrap_or("unknown"),
+                path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown"),
                 size_mb
             );
             out.push(FoundModel {
@@ -160,12 +182,10 @@ pub fn scan_for_whisper_models(models_dir: &PathBuf) -> Vec<FoundModel> {
 }
 
 // Regex for stripping filler words and stuttered doubles
-static FILLER_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)\b(uh+|um+|er+|ah+|hm+|hmm+|like,?)\b").unwrap()
-});
-static STUTTER_RE: Lazy<fancy_regex::Regex> = Lazy::new(|| {
-    fancy_regex::Regex::new(r"(?i)\b(\w+)\s+\1\b").unwrap()
-});
+static FILLER_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"(?i)\b(uh+|um+|er+|ah+|hm+|hmm+|like,?)\b").unwrap());
+static STUTTER_RE: Lazy<fancy_regex::Regex> =
+    Lazy::new(|| fancy_regex::Regex::new(r"(?i)\b(\w+)\s+\1\b").unwrap());
 static MULTI_SPACE_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"  +").unwrap());
 
 /// HTTP-based transcription client talking to whisper.cpp sidecar server.
@@ -179,16 +199,13 @@ impl Transcriber {
     pub fn new() -> Self {
         let client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(180))
-            .tcp_nodelay(true)        // disable Nagle — shaves ~0-40ms on localhost
+            .tcp_nodelay(true) // disable Nagle — shaves ~0-40ms on localhost
             .tcp_keepalive(std::time::Duration::from_secs(60))
             .pool_idle_timeout(std::time::Duration::from_secs(300)) // keep connection warm
             .build()
             .expect("Failed to build HTTP client");
 
-        let endpoint = format!(
-            "{}/v1/audio/transcriptions",
-            config::WHISPER_SERVER_URL
-        );
+        let endpoint = format!("{}/v1/audio/transcriptions", config::WHISPER_SERVER_URL);
 
         let dsp = DspChain::new();
         log::info!("Transcriber ready (HTTP → {})", endpoint);
@@ -212,17 +229,18 @@ impl Transcriber {
         let t0 = Instant::now();
 
         // Convert i16 → f32 in [-1.0, 1.0]
-        let mut audio_f32: Vec<f32> = audio_i16
-            .iter()
-            .map(|&s| s as f32 / 32768.0)
-            .collect();
+        let mut audio_f32: Vec<f32> = audio_i16.iter().map(|&s| s as f32 / 32768.0).collect();
 
         // DSP conditioning: highpass → high-shelf → compressor
         self.dsp.process(&mut audio_f32);
 
         let duration_s = audio_f32.len() as f64 / config::AUDIO_RATE as f64;
         let t_dsp = t0.elapsed();
-        log::info!("[perf] DSP: {:.1}ms for {:.2}s audio", t_dsp.as_secs_f64() * 1000.0, duration_s);
+        log::info!(
+            "[perf] DSP: {:.1}ms for {:.2}s audio",
+            t_dsp.as_secs_f64() * 1000.0,
+            duration_s
+        );
 
         // Compute the minimum audio context required for this clip.
         //
@@ -237,8 +255,12 @@ impl Transcriber {
         let audio_ctx = ((n_samples / 320) + 64).min(1500);
         #[cfg(not(target_os = "windows"))]
         let audio_ctx_str = audio_ctx.to_string();
-        log::info!("[perf] audio_ctx={} (covers {:.1}s of {:.2}s audio)",
-            audio_ctx, audio_ctx as f64 * 320.0 / config::AUDIO_RATE as f64, duration_s);
+        log::info!(
+            "[perf] audio_ctx={} (covers {:.1}s of {:.2}s audio)",
+            audio_ctx,
+            audio_ctx as f64 * 320.0 / config::AUDIO_RATE as f64,
+            duration_s
+        );
 
         let wav_data = encode_wav_f32(&audio_f32, config::AUDIO_RATE);
         // Drop the f32 buffer immediately — no longer needed, frees memory before HTTP
@@ -251,7 +273,11 @@ impl Transcriber {
             .unwrap();
 
         // Use empty string for auto-detect: explicit "auto", or multiple languages (comma-separated)
-        let lang_value = if language == "auto" || language.contains(',') { "" } else { language };
+        let lang_value = if language == "auto" || language.contains(',') {
+            ""
+        } else {
+            language
+        };
 
         let form = reqwest::blocking::multipart::Form::new()
             .part("file", file_part)
@@ -274,7 +300,10 @@ impl Transcriber {
         let form = form.text("audio_ctx", audio_ctx_str);
 
         let t_send = t0.elapsed();
-        log::info!("[perf] encode+form: {:.1}ms", (t_send - t_dsp).as_secs_f64() * 1000.0);
+        log::info!(
+            "[perf] encode+form: {:.1}ms",
+            (t_send - t_dsp).as_secs_f64() * 1000.0
+        );
 
         let response = match self.client.post(&self.endpoint).multipart(form).send() {
             Ok(r) => r,
@@ -300,7 +329,10 @@ impl Transcriber {
         };
 
         let t_http = t0.elapsed();
-        log::info!("[perf] HTTP round-trip: {:.1}ms", (t_http - t_send).as_secs_f64() * 1000.0);
+        log::info!(
+            "[perf] HTTP round-trip: {:.1}ms",
+            (t_http - t_send).as_secs_f64() * 1000.0
+        );
 
         // Post-processing: strip fillers and stutters
         text = FILLER_RE.replace_all(&text, "").to_string();
@@ -416,7 +448,10 @@ impl Transcriber {
                 let total_mb = total_size as f64 / 1_048_576.0;
                 on_progress(
                     pct,
-                    &format!("Downloading model: {:.0}/{:.0} MB ({:.1}%)", mb, total_mb, pct),
+                    &format!(
+                        "Downloading model: {:.0}/{:.0} MB ({:.1}%)",
+                        mb, total_mb, pct
+                    ),
                 );
             }
         }

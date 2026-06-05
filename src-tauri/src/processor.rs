@@ -72,13 +72,15 @@ static SYMBOL_RULES: Lazy<Vec<SymbolRule>> = Lazy::new(|| {
         .collect()
 });
 
-static SPACE_BEFORE_PUNCT: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r" +([.,;:!?\)\]\}])").unwrap());
+static SPACE_BEFORE_PUNCT: Lazy<Regex> = Lazy::new(|| Regex::new(r" +([.,;:!?\)\]\}])").unwrap());
 
 fn apply_symbol_dict(text: &str) -> String {
     let mut result = text.to_string();
     for rule in SYMBOL_RULES.iter() {
-        result = rule.pattern.replace_all(&result, rule.replacement).to_string();
+        result = rule
+            .pattern
+            .replace_all(&result, rule.replacement)
+            .to_string();
     }
     result = SPACE_BEFORE_PUNCT.replace_all(&result, "$1").to_string();
     result.trim().to_string()
@@ -93,16 +95,25 @@ static SPEECH_RULES: Lazy<Vec<SymbolRule>> = Lazy::new(|| {
         // Self-correction "scratch that" at END (no replacement): delete from the
         // mistaken word(s) onwards — up to 5 words before the marker.
         // "reduces scratch that" → "" so preceding context is preserved.
-        (r"(?i)\s+\w[\w'-]*(?:\s+\w[\w'-]*){0,4}[,\s]*\b(?:scratch|strike|delete|forget)\s+that\b\s*[.!?]?\s*$", ""),
+        (
+            r"(?i)\s+\w[\w'-]*(?:\s+\w[\w'-]*){0,4}[,\s]*\b(?:scratch|strike|delete|forget)\s+that\b\s*[.!?]?\s*$",
+            "",
+        ),
         // Self-correction "scratch that" MID-sentence: delete the mistaken word(s)
         // + the marker — keep everything before AND after.
         // "prompt reduces, scratch that, increases" → "prompt increases"
-        (r"(?i)\b\w[\w'-]*(?:\s+\w[\w'-]*){0,4}[,\s]+(?:scratch|strike|delete|forget)\s+that[,\s]+", ""),
+        (
+            r"(?i)\b\w[\w'-]*(?:\s+\w[\w'-]*){0,4}[,\s]+(?:scratch|strike|delete|forget)\s+that[,\s]+",
+            "",
+        ),
         // Self-correction "I mean / correction / or rather": delete only the
         // immediately preceding word + the marker. Whisper may add a newline
         // between the marker and the correction, so use \s+ to absorb it.
         // "reduces, I mean\n  increases" → "increases" (with context before intact)
-        (r"(?i)\b\w[\w'-]*[,\s]+(?:I\s+mean|correction[,:]?|or\s+rather)[,\s]+", ""),
+        (
+            r"(?i)\b\w[\w'-]*[,\s]+(?:I\s+mean|correction[,:]?|or\s+rather)[,\s]+",
+            "",
+        ),
         // Self-correction "no wait / wait no": remove just the spoken marker
         (r"(?i)[,\s]*\b(?:no\s+wait|wait\s+no)\b[,\s]*", " "),
         // Filler vocalizations: um, uh, er, ah, eh, hmm, hm
@@ -127,9 +138,7 @@ fn remove_stutters(text: &str) -> String {
     let mut i = 0;
     while i < words.len() {
         result.push(words[i]);
-        if i + 1 < words.len()
-            && words[i].to_lowercase() == words[i + 1].to_lowercase()
-        {
+        if i + 1 < words.len() && words[i].to_lowercase() == words[i + 1].to_lowercase() {
             i += 2; // skip the duplicate
         } else {
             i += 1;
@@ -141,7 +150,10 @@ fn remove_stutters(text: &str) -> String {
 fn apply_speech_rules(text: &str) -> String {
     let mut result = text.to_string();
     for rule in SPEECH_RULES.iter() {
-        result = rule.pattern.replace_all(&result, rule.replacement).to_string();
+        result = rule
+            .pattern
+            .replace_all(&result, rule.replacement)
+            .to_string();
     }
     result = remove_stutters(&result);
     result = MULTI_SPACE.replace_all(&result, " ").to_string();

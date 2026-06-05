@@ -127,8 +127,7 @@ impl Compressor {
         if abs_x > self.envelope {
             self.envelope = self.attack_coeff * self.envelope + (1.0 - self.attack_coeff) * abs_x;
         } else {
-            self.envelope =
-                self.release_coeff * self.envelope + (1.0 - self.release_coeff) * abs_x;
+            self.envelope = self.release_coeff * self.envelope + (1.0 - self.release_coeff) * abs_x;
         }
 
         // Gain computation
